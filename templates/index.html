@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bolsa Virtual Pro</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<!-- ==================== PANTALLA DE ACCESO ==================== -->
+<div id="loginScreen" class="login-screen">
+  <div class="login-card">
+    <div class="login-mark">
+      <span class="ticker-dot"></span>
+      <span class="brand">Bolsa Virtual Pro</span>
+    </div>
+    <h1>Entra con tu cuenta</h1>
+    <p class="sub">Si es la primera vez, se crea tu cuenta al instante. Empieza con $0 — solicita tu dinero ficticio al administrador desde el panel.</p>
+
+    <label class="field-label" for="nameInput">Usuario</label>
+    <input id="nameInput" class="input" type="text" placeholder="Ej: Carlos Ramírez" maxlength="40" autocomplete="username">
+
+    <label class="field-label mt-16" for="passwordInput">Contraseña</label>
+    <input id="passwordInput" class="input" type="password" placeholder="Mínimo 4 caracteres" maxlength="60" autocomplete="current-password">
+
+    <button id="loginBtn" class="btn btn-primary">Entrar a la bolsa</button>
+
+    <div id="loginError" class="login-error"></div>
+    <p class="login-note">No se pide correo. Si el usuario no existe, se crea automáticamente con esa contraseña.</p>
+  </div>
+</div>
+
+<!-- ==================== APLICACIÓN (DASHBOARD) ==================== -->
+<div id="appShell" class="app-shell hidden">
+
+  <!-- Cinta de precios en movimiento -->
+  <div class="ticker-bar">
+    <div class="ticker-track" id="tickerTrack"></div>
+  </div>
+
+  <div class="topbar">
+    <div class="brand-block">
+      <span class="logo-dot"></span>
+      <h2>Bolsa Virtual Pro</h2>
+    </div>
+    <div class="topbar-actions">
+      <div class="pill">👤 <b id="userNameLabel">—</b></div>
+      <div class="pill">💵 <b id="userBalanceLabel">$0.00</b></div>
+      <button id="soundToggleBtn" class="icon-btn" title="Sonidos">🔔</button>
+      <button id="themeToggleBtn" class="icon-btn" title="Cambiar tema">🌙</button>
+      <button id="logoutBtn" class="btn btn-ghost btn-sm">Salir</button>
+    </div>
+  </div>
+
+  <div class="main-container">
+
+    <div class="tabs">
+      <button class="tab-btn active" data-view="dashboardView">Panel</button>
+      <button class="tab-btn" data-view="marketView">Mercado</button>
+      <button class="tab-btn" data-view="portfolioView">Portafolio</button>
+      <button class="tab-btn" data-view="historyView">Historial</button>
+      <button class="tab-btn" data-view="rankingView">Ranking</button>
+    </div>
+
+    <!-- ---------- VISTA: PANEL (dashboard) ---------- -->
+    <div id="dashboardView" class="view active">
+      <div class="stats-grid" id="dashboardStats"></div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h3>Tus estadísticas</h3>
+        </div>
+        <div class="stats-grid" id="userStatsGrid"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Solicitudes de dinero ficticio</h3></div>
+        <p class="text-dim" style="margin-top:0;font-size:13.5px;">
+          Tanto los depósitos como los retiros deben ser aprobados por el administrador antes de que tu saldo cambie.
+        </p>
+
+        <div class="tabs-mini">
+          <button class="tab-mini-btn active buy" id="depositTabBtn">Solicitar depósito</button>
+          <button class="tab-mini-btn sell" id="withdrawTabBtn">Solicitar retiro</button>
+        </div>
+
+        <div class="inline-form">
+          <input id="depositAmountInput" class="input" type="number" min="1" placeholder="Monto a solicitar">
+          <input id="depositNoteInput" class="input" type="text" placeholder="Motivo (opcional)">
+          <button id="requestDepositBtn" class="btn btn-buy" style="margin-top:0;width:auto;">Enviar solicitud</button>
+        </div>
+        <div id="moneyRequestsWrap" class="mt-16"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Vista rápida del mercado</h3></div>
+        <div class="stocks-grid" id="quickMarketGrid"></div>
+      </div>
+    </div>
+
+    <!-- ---------- VISTA: MERCADO ---------- -->
+    <div id="marketView" class="view">
+      <div class="market-toolbar">
+        <div class="search-box">
+          <span class="icon">🔎</span>
+          <input id="stockSearchInput" type="text" placeholder="Buscar por nombre o símbolo...">
+        </div>
+        <select id="stockFilterSelect" class="filter-select">
+          <option value="all">Todas</option>
+          <option value="up">Solo en alza</option>
+          <option value="down">Solo en baja</option>
+          <option value="owned">Que tengo en cartera</option>
+        </select>
+      </div>
+      <div class="stocks-grid" id="marketGrid"></div>
+    </div>
+
+    <!-- ---------- VISTA: PORTAFOLIO ---------- -->
+    <div id="portfolioView" class="view">
+      <div class="stats-grid" id="portfolioStats"></div>
+      <div class="panel">
+        <div class="panel-header"><h3>Tus posiciones</h3></div>
+        <div id="portfolioTableWrap"></div>
+      </div>
+    </div>
+
+    <!-- ---------- VISTA: HISTORIAL ---------- -->
+    <div id="historyView" class="view">
+      <div class="panel">
+        <div class="panel-header">
+          <h3>Historial de operaciones</h3>
+          <div class="action-row">
+            <a class="btn btn-ghost btn-sm" href="/api/export/pdf">⬇ Exportar PDF</a>
+            <a class="btn btn-ghost btn-sm" href="/api/export/excel">⬇ Exportar Excel</a>
+          </div>
+        </div>
+        <div id="historyTableWrap"></div>
+      </div>
+    </div>
+
+    <!-- ---------- VISTA: RANKING ---------- -->
+    <div id="rankingView" class="view">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;" id="rankingGridWrap">
+        <div class="panel">
+          <div class="panel-header"><h3>🏆 Top por patrimonio</h3></div>
+          <div id="rankingByEquity"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h3>📈 Top por ganancias</h3></div>
+          <div id="rankingByGains"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ==================== MODAL DE OPERACIÓN ==================== -->
+<div id="tradeModalOverlay" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-close-row">
+      <button class="icon-btn" id="closeTradeModalBtn">✕</button>
+    </div>
+    <h3 id="tradeModalTitle">—</h3>
+    <p class="modal-sub" id="tradeModalSub">—</p>
+
+    <div class="big-chart-wrap"><canvas id="tradeChartCanvas"></canvas></div>
+
+    <div class="tabs-mini">
+      <button class="tab-mini-btn active buy" id="buyTabBtn">Comprar</button>
+      <button class="tab-mini-btn sell" id="sellTabBtn">Vender</button>
+    </div>
+
+    <label class="field-label">Cantidad de acciones</label>
+    <input id="tradeQuantityInput" class="input" type="number" min="0.0001" step="any" placeholder="Ej: 0.5, 1, 2.5...">
+
+    <div class="trade-summary-row"><span>Precio actual</span><b id="tradeSummaryPrice">$0.00</b></div>
+    <div class="trade-summary-row"><span>Total estimado</span><b id="tradeSummaryTotal">$0.00</b></div>
+    <div class="trade-summary-row" id="tradeSummaryOwnedRow"><span>Acciones en cartera</span><b id="tradeSummaryOwned">0</b></div>
+
+    <button id="confirmTradeBtn" class="btn btn-buy w-full mt-16" style="padding:14px;">Confirmar compra</button>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="{{ url_for('static', filename='js/vendor/chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

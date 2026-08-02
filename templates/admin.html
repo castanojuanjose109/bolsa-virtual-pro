@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bolsa Virtual Pro — Administración</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<!-- ==================== LOGIN DE ADMINISTRADOR ==================== -->
+<div id="adminLoginScreen" class="admin-login-screen">
+  <div class="login-card">
+    <div class="login-mark">
+      <span class="ticker-dot" style="background:var(--red);box-shadow:0 0 12px var(--red);"></span>
+      <span class="brand">Panel de administración</span>
+    </div>
+    <h1>Acceso restringido</h1>
+    <p class="sub">Ingresa las credenciales de administrador para continuar.</p>
+
+    <label class="field-label">Usuario</label>
+    <input id="adminUserInput" class="input" type="text" autocomplete="off">
+
+    <label class="field-label mt-16">Contraseña</label>
+    <input id="adminPassInput" class="input" type="password" autocomplete="off">
+
+    <button id="adminLoginBtn" class="btn btn-primary" style="background:var(--red);">Ingresar</button>
+    <div id="adminLoginError" class="login-error"></div>
+  </div>
+</div>
+
+<!-- ==================== PANEL DE ADMINISTRACIÓN ==================== -->
+<div id="adminShell" class="admin-shell hidden">
+
+  <div class="admin-topbar">
+    <div class="brand-block">
+      <span class="admin-badge">ADMIN</span>
+      <h2 style="margin-left:12px;">Bolsa Virtual Pro</h2>
+    </div>
+    <div class="topbar-actions">
+      <div class="pill">Mercado: <b id="marketStatusLabel">detenido</b></div>
+      <button id="adminLogoutBtn" class="btn btn-ghost btn-sm">Cerrar sesión</button>
+    </div>
+  </div>
+
+  <div class="admin-tabs">
+    <button class="tab-btn active" data-view="adminOverviewView">Resumen</button>
+    <button class="tab-btn" data-view="adminUsersView">Usuarios</button>
+    <button class="tab-btn" data-view="adminDepositsView">Solicitudes de dinero <span id="pendingDepositsBadge"></span></button>
+    <button class="tab-btn" data-view="adminMarketView">Mercado</button>
+  </div>
+
+  <div class="main-container">
+
+    <!-- ---------- RESUMEN GLOBAL ---------- -->
+    <div id="adminOverviewView" class="view active">
+      <div class="stats-grid" id="adminStatsGrid"></div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h3>Simulación automática del mercado</h3>
+        </div>
+        <p class="text-dim" style="margin-top:0;">
+          Cuando está activa, cada 10 segundos los precios se recalculan combinando la
+          oferta y demanda real de los usuarios (más compras suben el precio, más ventas
+          lo bajan) con una pequeña variación aleatoria de mercado.
+        </p>
+        <div class="action-row">
+          <button id="startMarketBtn" class="btn btn-outline-green">▶ Iniciar mercado automático</button>
+          <button id="stopMarketBtn" class="btn btn-outline-red">■ Detener mercado</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- USUARIOS ---------- -->
+    <div id="adminUsersView" class="view">
+      <div class="panel">
+        <div class="panel-header">
+          <h3>Crear cuenta manualmente</h3>
+        </div>
+        <div class="inline-form">
+          <input id="newUserName" class="input" placeholder="Nombre del usuario">
+          <input id="newUserPassword" class="input" type="text" placeholder="Contraseña (opcional, se genera si se deja vacía)">
+          <input id="newUserBalance" class="input" type="number" placeholder="Saldo inicial (opcional)">
+          <button id="createUserBtn" class="btn btn-primary" style="margin-top:0;width:auto;">Crear cuenta</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Todos los usuarios</h3></div>
+        <div id="adminUsersTableWrap"></div>
+      </div>
+    </div>
+
+    <!-- ---------- SOLICITUDES DE DINERO (ADMIN) ---------- -->
+    <div id="adminDepositsView" class="view">
+      <div class="panel">
+        <div class="panel-header">
+          <h3>Solicitudes de depósito y retiro</h3>
+        </div>
+        <p class="text-dim" style="margin-top:0;">
+          Ni los depósitos ni los retiros que piden los usuarios cambian su saldo automáticamente: debes aprobarlos o rechazarlos aquí.
+        </p>
+        <div id="adminDepositsTableWrap"></div>
+      </div>
+    </div>
+
+    <!-- ---------- MERCADO (ADMIN) ---------- -->
+    <div id="adminMarketView" class="view">
+      <div class="panel">
+        <div class="panel-header"><h3>Acciones del mercado</h3></div>
+        <div id="adminStocksTableWrap"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ==================== MODAL: EDITAR USUARIO ==================== -->
+<div id="editUserModalOverlay" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-close-row"><button class="icon-btn" id="closeEditUserModalBtn">✕</button></div>
+    <h3>Editar usuario</h3>
+    <p class="modal-sub" id="editUserSub">—</p>
+
+    <label class="field-label">Nombre</label>
+    <input id="editUserName" class="input">
+
+    <label class="field-label mt-16">Saldo</label>
+    <input id="editUserBalance" class="input" type="number">
+
+    <label class="field-label mt-16">Nueva contraseña (opcional)</label>
+    <input id="editUserNewPassword" class="input" type="text" placeholder="Dejar vacío para no cambiarla">
+
+    <button id="saveUserBtn" class="btn btn-primary">Guardar cambios</button>
+
+    <hr style="border-color:var(--border-soft);margin:20px 0;">
+
+    <label class="field-label">Agregar / quitar dinero</label>
+    <div class="inline-form">
+      <input id="moneyAmountInput" class="input" type="number" placeholder="Monto">
+      <button id="addMoneyBtn" class="btn btn-outline-green btn-sm">+ Añadir</button>
+      <button id="removeMoneyBtn" class="btn btn-outline-red btn-sm">− Quitar</button>
+    </div>
+
+    <label class="field-label mt-16">Regalar / quitar acciones</label>
+    <div class="inline-form">
+      <select id="stockSelectForUser" class="filter-select"></select>
+      <input id="stockQtyForUser" class="input" type="number" placeholder="Cantidad">
+      <button id="giveStockBtn" class="btn btn-outline-green btn-sm">Regalar</button>
+      <button id="takeStockBtn" class="btn btn-outline-red btn-sm">Quitar</button>
+    </div>
+
+    <div class="action-row mt-16">
+      <button id="blockUserBtn" class="btn btn-ghost btn-sm">🔒 Bloquear</button>
+      <button id="unblockUserBtn" class="btn btn-ghost btn-sm">🔓 Desbloquear</button>
+      <button id="resetUserBtn" class="btn btn-ghost btn-sm">♻ Reiniciar cuenta</button>
+      <button id="deleteUserBtn" class="btn btn-outline-red btn-sm">🗑 Eliminar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== MODAL: EDITAR ACCIÓN ==================== -->
+<div id="editStockModalOverlay" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-close-row"><button class="icon-btn" id="closeEditStockModalBtn">✕</button></div>
+    <h3>Editar acción</h3>
+    <p class="modal-sub" id="editStockSub">—</p>
+
+    <label class="field-label">Nombre</label>
+    <input id="editStockName" class="input">
+
+    <label class="field-label mt-16">Precio</label>
+    <input id="editStockPrice" class="input" type="number" step="0.01">
+
+    <label class="field-label mt-16">Porcentaje de cambio mostrado</label>
+    <input id="editStockChange" class="input" type="number" step="0.01">
+
+    <label class="field-label mt-16">Estado</label>
+    <select id="editStockStatus" class="filter-select w-full">
+      <option value="active">Activa</option>
+      <option value="inactive">Inactiva</option>
+    </select>
+
+    <button id="saveStockBtn" class="btn btn-primary">Guardar cambios</button>
+
+    <hr style="border-color:var(--border-soft);margin:20px 0;">
+
+    <label class="field-label">Botones rápidos de precio</label>
+    <div class="percent-buttons">
+      <button class="btn btn-outline-green btn-sm quick-pct" data-pct="1">⬆ +1%</button>
+      <button class="btn btn-outline-green btn-sm quick-pct" data-pct="3">⬆ +3%</button>
+      <button class="btn btn-outline-green btn-sm quick-pct" data-pct="5">⬆ +5%</button>
+      <button class="btn btn-outline-green btn-sm quick-pct" data-pct="10">⬆ +10%</button>
+      <button class="btn btn-outline-red btn-sm quick-pct" data-pct="-1">⬇ -1%</button>
+      <button class="btn btn-outline-red btn-sm quick-pct" data-pct="-3">⬇ -3%</button>
+      <button class="btn btn-outline-red btn-sm quick-pct" data-pct="-5">⬇ -5%</button>
+      <button class="btn btn-outline-red btn-sm quick-pct" data-pct="-10">⬇ -10%</button>
+    </div>
+
+    <label class="field-label mt-16">Porcentaje manual</label>
+    <div class="inline-form">
+      <input id="manualPctInput" class="input" type="number" step="0.01" placeholder="Ej: 7.5 o -4.2">
+      <button id="applyManualPctBtn" class="btn btn-primary" style="margin-top:0;width:auto;">Aplicar</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+</body>
+</html>
