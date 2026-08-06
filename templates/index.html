@@ -59,6 +59,7 @@
       <button class="tab-btn active" data-view="dashboardView">Panel</button>
       <button class="tab-btn" data-view="marketView">Mercado</button>
       <button class="tab-btn" data-view="portfolioView">Portafolio</button>
+      <button class="tab-btn" data-view="cdtView">CDT</button>
       <button class="tab-btn" data-view="historyView">Historial</button>
       <button class="tab-btn" data-view="rankingView">Ranking</button>
     </div>
@@ -122,6 +123,35 @@
       <div class="panel">
         <div class="panel-header"><h3>Tus posiciones</h3></div>
         <div id="portfolioTableWrap"></div>
+      </div>
+    </div>
+
+    <!-- ---------- VISTA: CDT ---------- -->
+    <div id="cdtView" class="view">
+      <div class="panel">
+        <div class="panel-header"><h3>Abrir un nuevo CDT</h3></div>
+        <p class="text-dim" style="margin-top:0;font-size:13.5px;">
+          Un CDT bloquea tu dinero por el número de quincenas (períodos de 15 días) que elijas,
+          pagando intereses <b>cada quincena</b>. Al final, recibes de vuelta el capital completo
+          junto con el último pago de interés. La tasa actual es
+          <b id="cdtCurrentRate">—</b> por quincena.
+        </p>
+        <div class="inline-form">
+          <input id="cdtAmountInput" class="input" type="number" min="1" placeholder="Monto a invertir">
+          <input id="cdtQuincenasInput" class="input" type="number" min="1" max="48" placeholder="Cantidad de quincenas (ej: 3)">
+          <button id="createCdtBtn" class="btn btn-primary" style="margin-top:0;width:auto;">Abrir CDT</button>
+        </div>
+        <div id="cdtSimulation" class="mt-16" style="font-size:13.5px;color:var(--text-dim);"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Tus CDTs</h3></div>
+        <div id="cdtListWrap"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Historial de pagos de CDT</h3></div>
+        <div id="cdtPaymentsWrap"></div>
       </div>
     </div>
 

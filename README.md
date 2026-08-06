@@ -116,7 +116,49 @@ saldos ni resultados.
 Permite gestionar usuarios (editar, bloquear, eliminar, reiniciar, dar/quitar
 dinero y acciones) y el mercado (editar cualquier acción, botones rápidos de
 ±1/3/5/10%, porcentaje manual, y arrancar/detener la simulación automática
-que mueve todos los precios cada 5 segundos entre -10% y +10%).
+que mueve todos los precios cada 10 segundos según oferta y demanda).
+
+### CDT (Certificados de Depósito a Término)
+Desde la pestaña **CDT** del panel principal, el usuario elige un monto y a
+**cuántas quincenas** (períodos de 15 días) lo quiere meter. Ese capital
+queda **bloqueado** (descontado del saldo disponible, pero sigue contando
+como parte de su patrimonio total). Un proceso de fondo (`scheduler_loop()`
+en `app.py`, que corre cada 30 segundos) revisa constantemente si a algún
+CDT ya le toca su pago:
+- **Cada quincena** se le acredita al usuario el interés correspondiente
+  (capital × tasa vigente al momento de crear el CDT).
+- **En la última quincena**, además del interés se le devuelve el capital
+  completo, y el CDT queda marcado como `completed`.
+
+El administrador controla la **tasa de interés por quincena** desde
+`/admin` → pestaña **CDT** (campo de porcentaje + botón "Guardar tasa").
+Cambiar la tasa **no afecta retroactivamente** los CDTs que ya estén
+activos — cada uno conserva la tasa con la que se creó, solo los CDTs
+nuevos usan la tasa actualizada. Desde esa misma pestaña el admin puede
+ver todos los CDTs de todos los usuarios.
+
+### Horario programado del mercado automático
+Además del botón manual de iniciar/detener, desde `/admin` → **Mercado**
+→ "Horario programado del mercado automático" el admin puede definir una
+hora de inicio y una hora de fin (0-23, hora del servidor) para que el
+mercado se **encienda y apague solo todos los días**. El mismo proceso de
+fondo revisa cada 30 segundos si la hora actual cae dentro del rango
+configurado y enciende/apaga el mercado en consecuencia. Mientras el
+horario esté activo, puede sobreescribir en el siguiente ciclo cualquier
+inicio/detención manual que hagas desde el botón de arriba.
+
+### Pagos masivos del admin a todos los usuarios
+Desde `/admin` → pestaña **Pagos masivos** hay dos formas de repartir
+dinero ficticio a **todos** los usuarios registrados a la vez:
+1. **Enviar ahora:** un botón que acredita un monto fijo a todos de
+   inmediato, con un solo clic (pide confirmación antes de ejecutar).
+2. **Recurrente:** se configura un monto y un intervalo en horas; una vez
+   activado, el mismo proceso de fondo le acredita ese monto a todos los
+   usuarios automáticamente cada vez que se cumple el intervalo, sin que
+   el admin tenga que volver a hacer nada. La primera vez que se activa,
+   el pago se dispara de inmediato; los siguientes respetan el intervalo
+   configurado. Todo movimiento (manual o recurrente) queda registrado en
+   el historial de pagos masivos.
 
 ### Exportación
 Desde "Historial" el usuario puede exportar sus operaciones a PDF o Excel.
@@ -189,8 +231,10 @@ listo para plataformas como Render o Railway.
    sección).
 
 **Importante:** usa siempre `--workers 1` (ya viene así en el `Procfile`).
-El simulador de mercado automático corre en un hilo dentro del proceso; con
-más de un worker se duplicaría en cada uno.
+El simulador de mercado y el scheduler de fondo (CDT, horario del mercado,
+pagos masivos recurrentes) corren en hilos dentro del proceso; con más de
+un worker se duplicarían en cada uno (por ejemplo, pagando doble interés
+de CDT).
 
 ## Migrar a MySQL (opcional)
 

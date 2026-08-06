@@ -52,10 +52,17 @@ function enterAdminPanel() {
   loadAdminUsers();
   loadAdminStocks();
   loadAdminDeposits();
+  loadMarketSchedule();
+  loadCdtRate();
+  loadAdminCdtList();
+  loadMassPaymentSchedule();
+  loadMassPaymentHistory();
   adminRefreshTimer = setInterval(() => {
     refreshAdminOverview();
-    if (document.getElementById("adminMarketView").classList.contains("active")) loadAdminStocks();
+    if (document.getElementById("adminMarketView").classList.contains("active")) { loadAdminStocks(); loadMarketSchedule(); }
     if (document.getElementById("adminDepositsView").classList.contains("active")) loadAdminDeposits();
+    if (document.getElementById("adminCdtView").classList.contains("active")) loadAdminCdtList();
+    if (document.getElementById("adminMassPaymentView").classList.contains("active")) { loadMassPaymentSchedule(); loadMassPaymentHistory(); }
   }, 4000);
 }
 
@@ -78,8 +85,10 @@ function bindAdminAppEvents() {
       document.querySelectorAll(".admin-tabs .tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       if (btn.dataset.view === "adminUsersView") loadAdminUsers();
-      if (btn.dataset.view === "adminMarketView") loadAdminStocks();
+      if (btn.dataset.view === "adminMarketView") { loadAdminStocks(); loadMarketSchedule(); }
       if (btn.dataset.view === "adminDepositsView") loadAdminDeposits();
+      if (btn.dataset.view === "adminCdtView") { loadCdtRate(); loadAdminCdtList(); }
+      if (btn.dataset.view === "adminMassPaymentView") { loadMassPaymentSchedule(); loadMassPaymentHistory(); }
     });
   });
 
@@ -91,6 +100,20 @@ function bindAdminAppEvents() {
     const res = await apiFetch("/admin/api/market/stop", { method: "POST" });
     if (res.ok) { showToast("Mercado automático detenido.", "success"); refreshAdminOverview(); }
   });
+
+  // Horario programado del mercado
+  document.getElementById("saveScheduleBtn").addEventListener("click", saveMarketSchedule);
+  document.getElementById("enableScheduleBtn").addEventListener("click", () => toggleMarketSchedule(true));
+  document.getElementById("disableScheduleBtn").addEventListener("click", () => toggleMarketSchedule(false));
+
+  // Tasa de CDT
+  document.getElementById("saveCdtRateBtn").addEventListener("click", saveCdtRate);
+
+  // Pagos masivos
+  document.getElementById("sendMassPaymentNowBtn").addEventListener("click", sendMassPaymentNow);
+  document.getElementById("saveMassPaymentScheduleBtn").addEventListener("click", saveMassPaymentSchedule);
+  document.getElementById("enableMassPaymentBtn").addEventListener("click", () => toggleMassPaymentSchedule(true));
+  document.getElementById("disableMassPaymentBtn").addEventListener("click", () => toggleMassPaymentSchedule(false));
 
   document.getElementById("createUserBtn").addEventListener("click", createUser);
 
@@ -407,4 +430,180 @@ async function applyStockPercent(percent) {
   document.getElementById("editStockPrice").value = res.new_price;
   document.getElementById("editStockChange").value = percent;
   loadAdminStocks();
+}
+
+/* --------------------------------------------------------------------
+   Horario programado del mercado automático
+   -------------------------------------------------------------------- */
+async function loadMarketSchedule() {
+  const res = await apiFetch("/admin/api/market/schedule");
+  if (!res.ok) return;
+  document.getElementById("scheduleStartHour").value = res.start_hour;
+  document.getElementById("scheduleEndHour").value = res.end_hour;
+  document.getElementById("scheduleServerTime").textContent = res.server_time;
+  document.getElementById("scheduleStatusLabel").textContent = res.enabled ? "activo 🟢" : "desactivado 🔴";
+}
+
+async function saveMarketSchedule() {
+  const startHour = parseInt(document.getElementById("scheduleStartHour").value, 10);
+  const endHour = parseInt(document.getElementById("scheduleEndHour").value, 10);
+  if (isNaN(startHour) || isNaN(endHour) || startHour < 0 || startHour > 23 || endHour < 0 || endHour > 23) {
+    showToast("Las horas deben estar entre 0 y 23.", "error");
+    return;
+  }
+  const current = await apiFetch("/admin/api/market/schedule");
+  const res = await apiFetch("/admin/api/market/schedule", {
+    method: "POST",
+    body: { enabled: current.enabled, start_hour: startHour, end_hour: endHour },
+  });
+  if (!res.ok) { showToast(res.error || "No se pudo guardar el horario.", "error"); return; }
+  showToast("Horario guardado.", "success");
+  loadMarketSchedule();
+}
+
+async function toggleMarketSchedule(enabled) {
+  const startHour = parseInt(document.getElementById("scheduleStartHour").value, 10) || 9;
+  const endHour = parseInt(document.getElementById("scheduleEndHour").value, 10) || 18;
+  const res = await apiFetch("/admin/api/market/schedule", {
+    method: "POST",
+    body: { enabled, start_hour: startHour, end_hour: endHour },
+  });
+  if (!res.ok) { showToast(res.error || "No se pudo aplicar el cambio.", "error"); return; }
+  showToast(enabled ? "Horario programado activado." : "Horario programado desactivado.", "success");
+  loadMarketSchedule();
+  refreshAdminOverview();
+}
+
+/* --------------------------------------------------------------------
+   Tasa de interés del CDT
+   -------------------------------------------------------------------- */
+async function loadCdtRate() {
+  const res = await apiFetch("/admin/api/cdt/rate");
+  if (!res.ok) return;
+  document.getElementById("cdtRateInput").value = res.rate_percent;
+}
+
+async function saveCdtRate() {
+  const rate = parseFloat(document.getElementById("cdtRateInput").value);
+  if (isNaN(rate) || rate < 0 || rate > 100) { showToast("El porcentaje debe estar entre 0 y 100.", "error"); return; }
+  const res = await apiFetch("/admin/api/cdt/rate", { method: "POST", body: { rate_percent: rate } });
+  if (!res.ok) { showToast(res.error || "No se pudo guardar la tasa.", "error"); return; }
+  showToast("Tasa de CDT actualizada. Aplica solo a los CDTs nuevos.", "success");
+}
+
+async function loadAdminCdtList() {
+  const res = await apiFetch("/admin/api/cdt/list");
+  if (!res.ok) return;
+  const wrap = document.getElementById("adminCdtTableWrap");
+
+  if (res.cdts.length === 0) {
+    wrap.innerHTML = `<div class="empty-state">Todavía no hay ningún CDT abierto.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Usuario</th><th>Monto</th><th>Tasa</th><th>Progreso</th><th>Próximo pago</th><th>Estado</th></tr></thead>
+      <tbody>
+        ${res.cdts.map((c) => `
+          <tr>
+            <td>${c.user_name}</td>
+            <td>${formatMoney(c.amount)}</td>
+            <td>${c.rate_percent}%</td>
+            <td>${c.quincenas_pagadas} / ${c.quincenas_total}</td>
+            <td>${c.status === 'active' ? c.next_payment_at : '—'}</td>
+            <td>${c.status === 'active' ? '<span class="badge-buy">ACTIVO</span>' : '<span class="badge-sell">COMPLETADO</span>'}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+/* --------------------------------------------------------------------
+   Pagos masivos a todos los usuarios
+   -------------------------------------------------------------------- */
+async function sendMassPaymentNow() {
+  const amount = parseFloat(document.getElementById("massPaymentAmountNow").value);
+  if (!amount || amount <= 0) { showToast("Ingresa un monto válido.", "error"); return; }
+  if (!confirm(`¿Enviar ${formatMoney(amount)} a TODOS los usuarios registrados ahora mismo?`)) return;
+
+  const btn = document.getElementById("sendMassPaymentNowBtn");
+  btn.disabled = true;
+  const res = await apiFetch("/admin/api/mass-payment/send-now", { method: "POST", body: { amount } });
+  btn.disabled = false;
+
+  if (!res.ok) { showToast(res.error || "No se pudo enviar el pago.", "error"); return; }
+  showToast(`Se envió ${formatMoney(amount)} a ${res.users_count} usuario(s).`, "success");
+  document.getElementById("massPaymentAmountNow").value = "";
+  loadMassPaymentHistory();
+  refreshAdminOverview();
+}
+
+async function loadMassPaymentSchedule() {
+  const res = await apiFetch("/admin/api/mass-payment/schedule");
+  if (!res.ok) return;
+  document.getElementById("massPaymentRecurringAmount").value = res.amount || "";
+  document.getElementById("massPaymentIntervalHours").value = res.interval_hours || 24;
+  document.getElementById("massPaymentStatusLabel").textContent = res.enabled ? "activo 🟢" : "desactivado 🔴";
+  document.getElementById("massPaymentLastRunLabel").textContent = res.last_run || "nunca";
+}
+
+async function saveMassPaymentSchedule() {
+  const amount = parseFloat(document.getElementById("massPaymentRecurringAmount").value);
+  const intervalHours = parseFloat(document.getElementById("massPaymentIntervalHours").value);
+  if (!amount || amount <= 0) { showToast("Ingresa un monto válido.", "error"); return; }
+  if (!intervalHours || intervalHours <= 0) { showToast("Ingresa un intervalo válido en horas.", "error"); return; }
+
+  const current = await apiFetch("/admin/api/mass-payment/schedule");
+  const res = await apiFetch("/admin/api/mass-payment/schedule", {
+    method: "POST",
+    body: { enabled: current.enabled, amount, interval_hours: intervalHours },
+  });
+  if (!res.ok) { showToast(res.error || "No se pudo guardar.", "error"); return; }
+  showToast("Configuración de pago recurrente guardada.", "success");
+  loadMassPaymentSchedule();
+}
+
+async function toggleMassPaymentSchedule(enabled) {
+  const amount = parseFloat(document.getElementById("massPaymentRecurringAmount").value);
+  const intervalHours = parseFloat(document.getElementById("massPaymentIntervalHours").value);
+  if (enabled && (!amount || amount <= 0)) { showToast("Ingresa un monto válido antes de activar.", "error"); return; }
+  if (enabled && (!intervalHours || intervalHours <= 0)) { showToast("Ingresa un intervalo válido antes de activar.", "error"); return; }
+
+  const res = await apiFetch("/admin/api/mass-payment/schedule", {
+    method: "POST",
+    body: { enabled, amount: amount || 0, interval_hours: intervalHours || 24 },
+  });
+  if (!res.ok) { showToast(res.error || "No se pudo aplicar el cambio.", "error"); return; }
+  showToast(enabled ? "Pago recurrente activado." : "Pago recurrente desactivado.", "success");
+  loadMassPaymentSchedule();
+}
+
+async function loadMassPaymentHistory() {
+  const res = await apiFetch("/admin/api/mass-payment/history");
+  if (!res.ok) return;
+  const wrap = document.getElementById("massPaymentHistoryWrap");
+
+  if (res.payments.length === 0) {
+    wrap.innerHTML = `<div class="empty-state">Todavía no se ha enviado ningún pago masivo.</div>`;
+    return;
+  }
+
+  const sourceLabel = { manual: "Manual", recurring: "Recurrente" };
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Fecha</th><th>Monto por usuario</th><th>Usuarios</th><th>Tipo</th></tr></thead>
+      <tbody>
+        ${res.payments.map((p) => `
+          <tr>
+            <td>${p.paid_at}</td>
+            <td>${formatMoney(p.amount)}</td>
+            <td>${p.users_count}</td>
+            <td>${sourceLabel[p.source] || p.source}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
 }

@@ -121,6 +121,10 @@ function bindAppEvents() {
 
   bindMoneyRequestEvents();
 
+  document.getElementById("cdtAmountInput").addEventListener("input", updateCdtSimulation);
+  document.getElementById("cdtQuincenasInput").addEventListener("input", updateCdtSimulation);
+  document.getElementById("createCdtBtn").addEventListener("click", createCdt);
+
   document.getElementById("buyTabBtn").addEventListener("click", () => setTradeMode("buy"));
   document.getElementById("sellTabBtn").addEventListener("click", () => setTradeMode("sell"));
   document.getElementById("tradeQuantityInput").addEventListener("input", updateTradeSummary);
@@ -134,6 +138,7 @@ function switchView(viewId, btnEl) {
   btnEl.classList.add("active");
 
   if (viewId === "portfolioView") loadPortfolio();
+  if (viewId === "cdtView") loadCdtView();
   if (viewId === "historyView") loadHistory();
   if (viewId === "rankingView") loadRanking();
 }
@@ -332,6 +337,14 @@ function renderDashboardStats(summary) {
     <div class="stat-card">
       <div class="label">Patrimonio total</div>
       <div class="value">${formatMoney(summary.equity)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Bloqueado en CDT</div>
+      <div class="value">${formatMoney(summary.cdt_locked)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Interés ganado en CDT</div>
+      <div class="value positive">${formatMoney(summary.cdt_interest_earned)}</div>
     </div>
     <div class="stat-card">
       <div class="label">Rentabilidad</div>
@@ -679,4 +692,124 @@ async function loadRanking() {
   document.getElementById("rankingByGains").innerHTML = res.by_gains.length
     ? renderList(res.by_gains, "gains")
     : `<div class="empty-state">Aún no hay inversionistas.</div>`;
+}
+
+/* --------------------------------------------------------------------
+   CDT (Certificados de Depósito a Término)
+   -------------------------------------------------------------------- */
+let cdtRateCache = 0;
+
+async function loadCdtView() {
+  const res = await apiFetch("/api/cdt/config");
+  if (res.ok) {
+    cdtRateCache = res.rate_percent;
+    document.getElementById("cdtCurrentRate").textContent = `${res.rate_percent}%`;
+    updateCdtSimulation();
+  }
+  loadCdtList();
+  loadCdtPayments();
+}
+
+function updateCdtSimulation() {
+  const box = document.getElementById("cdtSimulation");
+  const amount = parseFloat(document.getElementById("cdtAmountInput").value);
+  const quincenas = parseInt(document.getElementById("cdtQuincenasInput").value, 10);
+
+  if (!amount || amount <= 0 || !quincenas || quincenas <= 0) {
+    box.textContent = "";
+    return;
+  }
+
+  const interestPerPeriod = amount * (cdtRateCache / 100);
+  const totalInterest = interestPerPeriod * quincenas;
+  const totalReturn = amount + totalInterest;
+  const days = quincenas * 15;
+
+  box.innerHTML = `
+    Recibirás <b class="text-green">${formatMoney(interestPerPeriod)}</b> cada quincena durante ${quincenas} quincena(s)
+    (${days} días), y en la última recibirás además tu capital de vuelta.
+    Total estimado al final: <b>${formatMoney(totalReturn)}</b>
+    (${formatMoney(totalInterest)} en intereses).
+  `;
+}
+
+async function createCdt() {
+  const amount = parseFloat(document.getElementById("cdtAmountInput").value);
+  const quincenas = parseInt(document.getElementById("cdtQuincenasInput").value, 10);
+
+  if (!amount || amount <= 0) { showToast("Ingresa un monto válido.", "error"); return; }
+  if (!quincenas || quincenas < 1 || quincenas > 48) { showToast("Elige entre 1 y 48 quincenas.", "error"); return; }
+
+  const btn = document.getElementById("createCdtBtn");
+  btn.disabled = true;
+
+  const res = await apiFetch("/api/cdt/create", { method: "POST", body: { amount, quincenas } });
+  btn.disabled = false;
+
+  if (!res.ok) { showToast(res.error || "No se pudo abrir el CDT.", "error"); return; }
+
+  showToast(res.message, "success");
+  playSuccessSound();
+  document.getElementById("cdtAmountInput").value = "";
+  document.getElementById("cdtQuincenasInput").value = "";
+  document.getElementById("cdtSimulation").textContent = "";
+  loadCdtList();
+  refreshEverything();
+}
+
+async function loadCdtList() {
+  const res = await apiFetch("/api/cdt/list");
+  if (!res.ok) return;
+  const wrap = document.getElementById("cdtListWrap");
+
+  if (res.cdts.length === 0) {
+    wrap.innerHTML = `<div class="empty-state"><div class="big-icon">🏦</div>Aún no tienes ningún CDT abierto.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Monto</th><th>Tasa/quincena</th><th>Progreso</th><th>Próximo pago</th><th>Interés total esperado</th><th>Estado</th></tr></thead>
+      <tbody>
+        ${res.cdts.map((c) => `
+          <tr>
+            <td>${formatMoney(c.amount)}</td>
+            <td>${c.rate_percent}%</td>
+            <td>${c.quincenas_pagadas} / ${c.quincenas_total}</td>
+            <td>${c.next_payment_at || "—"}</td>
+            <td class="text-green">${formatMoney(c.expected_interest_total)}</td>
+            <td>${c.status === 'active' ? '<span class="badge-buy">ACTIVO</span>' : '<span class="badge-sell">COMPLETADO</span>'}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+async function loadCdtPayments() {
+  const res = await apiFetch("/api/cdt/payments");
+  if (!res.ok) return;
+  const wrap = document.getElementById("cdtPaymentsWrap");
+
+  if (res.payments.length === 0) {
+    wrap.innerHTML = `<div class="empty-state">Todavía no se te ha pagado ningún interés de CDT.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Fecha</th><th>CDT</th><th>Quincena</th><th>Interés pagado</th><th>Capital devuelto</th></tr></thead>
+      <tbody>
+        ${res.payments.map((p) => `
+          <tr>
+            <td>${p.paid_at}</td>
+            <td>#${p.cdt_id}</td>
+            <td>${p.quincena_numero} / ${p.quincenas_total}</td>
+            <td class="text-green">${formatMoney(p.interest_amount)}</td>
+            <td>${p.principal_returned > 0 ? formatMoney(p.principal_returned) : "—"}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
 }

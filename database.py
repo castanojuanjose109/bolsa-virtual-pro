@@ -148,6 +148,50 @@ def init_db():
         )
     """)
 
+    # --- CDTs: certificados de depósito a término (el usuario elige a
+    # cuántas quincenas los mete; pagan intereses cada 15 días) ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS cdts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            amount REAL NOT NULL,             -- capital invertido (queda bloqueado)
+            quincenas_total INTEGER NOT NULL, -- a cuántas quincenas lo metió el usuario
+            quincenas_pagadas INTEGER NOT NULL DEFAULT 0,
+            rate_percent REAL NOT NULL,       -- % de interés por quincena, fijado al crear
+            status TEXT NOT NULL DEFAULT 'active',  -- active | completed
+            next_payment_at TEXT NOT NULL,    -- fecha/hora del próximo pago quincenal
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        )
+    """)
+
+    # --- Historial de pagos de intereses de CDT ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS cdt_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cdt_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            quincena_numero INTEGER NOT NULL,
+            interest_amount REAL NOT NULL,
+            principal_returned REAL NOT NULL DEFAULT 0,  -- > 0 solo en el último pago
+            paid_at TEXT NOT NULL,
+            FOREIGN KEY (cdt_id) REFERENCES cdts (id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        )
+    """)
+
+    # --- Historial de pagos masivos del admin a todos los usuarios ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS mass_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            amount REAL NOT NULL,
+            users_count INTEGER NOT NULL,
+            source TEXT NOT NULL,   -- 'manual' | 'recurring'
+            paid_at TEXT NOT NULL
+        )
+    """)
+
     # --- Configuración global de la aplicación ---
     cur.execute("""
         CREATE TABLE IF NOT EXISTS config (
@@ -182,6 +226,17 @@ def init_db():
     defaults = {
         "market_running": "0",
         "initial_balance": str(INITIAL_BALANCE),
+        # CDT: % de interés que se paga cada quincena (15 días)
+        "cdt_rate_percent": "2.0",
+        # Horario programado del mercado automático (hora del servidor, 0-23)
+        "market_schedule_enabled": "0",
+        "market_schedule_start_hour": "9",
+        "market_schedule_end_hour": "18",
+        # Pago recurrente del admin a todos los usuarios
+        "mass_payment_enabled": "0",
+        "mass_payment_amount": "0",
+        "mass_payment_interval_hours": "24",
+        "mass_payment_last_run": "",
     }
     for key, value in defaults.items():
         cur.execute("SELECT value FROM config WHERE key = ?", (key,))

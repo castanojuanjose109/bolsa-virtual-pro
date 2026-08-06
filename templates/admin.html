@@ -48,6 +48,8 @@
     <button class="tab-btn" data-view="adminUsersView">Usuarios</button>
     <button class="tab-btn" data-view="adminDepositsView">Solicitudes de dinero <span id="pendingDepositsBadge"></span></button>
     <button class="tab-btn" data-view="adminMarketView">Mercado</button>
+    <button class="tab-btn" data-view="adminCdtView">CDT</button>
+    <button class="tab-btn" data-view="adminMassPaymentView">Pagos masivos</button>
   </div>
 
   <div class="main-container">
@@ -108,8 +110,93 @@
     <!-- ---------- MERCADO (ADMIN) ---------- -->
     <div id="adminMarketView" class="view">
       <div class="panel">
+        <div class="panel-header"><h3>Horario programado del mercado automático</h3></div>
+        <p class="text-dim" style="margin-top:0;">
+          Si lo activas, el mercado se enciende y apaga solo todos los días según la hora del
+          servidor (hora actual del servidor: <b id="scheduleServerTime">—</b>). Mientras esté
+          activo, el botón manual de arriba puede ser sobrescrito por el horario en cada ciclo.
+        </p>
+        <div class="inline-form">
+          <label class="field-label" style="margin:0;">Desde (0-23)</label>
+          <input id="scheduleStartHour" class="input" type="number" min="0" max="23" style="width:90px;">
+          <label class="field-label" style="margin:0;">Hasta (0-23)</label>
+          <input id="scheduleEndHour" class="input" type="number" min="0" max="23" style="width:90px;">
+          <button id="saveScheduleBtn" class="btn btn-primary" style="margin-top:0;width:auto;">Guardar horario</button>
+        </div>
+        <div class="action-row mt-16">
+          <button id="enableScheduleBtn" class="btn btn-outline-green btn-sm">▶ Activar horario</button>
+          <button id="disableScheduleBtn" class="btn btn-outline-red btn-sm">■ Desactivar horario</button>
+          <span class="pill">Estado: <b id="scheduleStatusLabel">—</b></span>
+        </div>
+      </div>
+
+      <div class="panel">
         <div class="panel-header"><h3>Acciones del mercado</h3></div>
         <div id="adminStocksTableWrap"></div>
+      </div>
+    </div>
+
+    <!-- ---------- CDT (ADMIN) ---------- -->
+    <div id="adminCdtView" class="view">
+      <div class="panel">
+        <div class="panel-header"><h3>Tasa de interés del CDT</h3></div>
+        <p class="text-dim" style="margin-top:0;">
+          Porcentaje que se paga por cada quincena (15 días). Cambiar la tasa
+          solo afecta a los CDTs que se abran después del cambio; los que ya
+          están activos conservan la tasa con la que se crearon.
+        </p>
+        <div class="inline-form">
+          <input id="cdtRateInput" class="input" type="number" step="0.01" min="0" max="100" style="width:140px;">
+          <span>% por quincena</span>
+          <button id="saveCdtRateBtn" class="btn btn-primary" style="margin-top:0;width:auto;">Guardar tasa</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Todos los CDTs de los usuarios</h3></div>
+        <div id="adminCdtTableWrap"></div>
+      </div>
+    </div>
+
+    <!-- ---------- PAGOS MASIVOS (ADMIN) ---------- -->
+    <div id="adminMassPaymentView" class="view">
+      <div class="panel">
+        <div class="panel-header"><h3>Enviar dinero a todos los usuarios ahora</h3></div>
+        <p class="text-dim" style="margin-top:0;">
+          Con un solo clic, se acredita el mismo monto de dinero ficticio a
+          <b>todos</b> los usuarios registrados, de inmediato.
+        </p>
+        <div class="inline-form">
+          <input id="massPaymentAmountNow" class="input" type="number" min="1" placeholder="Monto por usuario">
+          <button id="sendMassPaymentNowBtn" class="btn btn-primary" style="margin-top:0;width:auto;">💸 Enviar a todos ahora</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Pago automático recurrente</h3></div>
+        <p class="text-dim" style="margin-top:0;">
+          Si lo activas, cada cierto número de horas se le acredita
+          automáticamente el mismo monto a todos los usuarios, sin que tengas
+          que hacer nada.
+        </p>
+        <div class="inline-form">
+          <input id="massPaymentRecurringAmount" class="input" type="number" min="1" placeholder="Monto por usuario">
+          <label class="field-label" style="margin:0;">Cada</label>
+          <input id="massPaymentIntervalHours" class="input" type="number" min="0.1" step="0.1" style="width:110px;" placeholder="Horas">
+          <span>horas</span>
+          <button id="saveMassPaymentScheduleBtn" class="btn btn-primary" style="margin-top:0;width:auto;">Guardar</button>
+        </div>
+        <div class="action-row mt-16">
+          <button id="enableMassPaymentBtn" class="btn btn-outline-green btn-sm">▶ Activar recurrente</button>
+          <button id="disableMassPaymentBtn" class="btn btn-outline-red btn-sm">■ Desactivar recurrente</button>
+          <span class="pill">Estado: <b id="massPaymentStatusLabel">—</b></span>
+          <span class="pill">Último pago: <b id="massPaymentLastRunLabel">—</b></span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Historial de pagos masivos</h3></div>
+        <div id="massPaymentHistoryWrap"></div>
       </div>
     </div>
 

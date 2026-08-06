@@ -17,6 +17,7 @@ import random
 import threading
 import time
 import io
+import datetime
 from functools import wraps
 
 from flask import (
@@ -155,6 +156,143 @@ def is_market_running():
 
 
 # --------------------------------------------------------------------------
+# Scheduler global de fondo (un solo hilo, siempre activo desde que arranca
+# la app). Cada 30 segundos revisa tres cosas independientes:
+#   1) CDTs cuyo pago quincenal (cada 15 días) ya se cumplió.
+#   2) Si el mercado automático debe encenderse/apagarse según el horario
+#      programado por el admin (hora de inicio / hora de fin).
+#   3) Si toca un pago masivo recurrente del admin a todos los usuarios.
+# --------------------------------------------------------------------------
+SCHEDULER_TICK_SECONDS = 30
+CDT_PERIOD_DAYS = 15
+
+
+def process_due_cdts():
+    """Paga el interés quincenal de cada CDT activo cuyo turno ya llegó.
+    En el pago final (cuando se cumplen todas las quincenas contratadas),
+    además del interés se devuelve el capital y el CDT queda 'completed'.
+    """
+    conn = db.get_connection()
+    now = datetime.datetime.now()
+    now_str = db.now_iso()
+
+    due = conn.execute(
+        "SELECT * FROM cdts WHERE status = 'active' AND next_payment_at <= ?",
+        (now.strftime("%Y-%m-%d %H:%M:%S"),),
+    ).fetchall()
+
+    for cdt in due:
+        interest = round(cdt["amount"] * (cdt["rate_percent"] / 100), 2)
+        new_quincenas_pagadas = cdt["quincenas_pagadas"] + 1
+        is_final = new_quincenas_pagadas >= cdt["quincenas_total"]
+        principal_returned = cdt["amount"] if is_final else 0.0
+        total_credit = round(interest + principal_returned, 2)
+
+        conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (total_credit, cdt["user_id"]))
+
+        if is_final:
+            conn.execute(
+                "UPDATE cdts SET quincenas_pagadas = ?, status = 'completed', completed_at = ? WHERE id = ?",
+                (new_quincenas_pagadas, now_str, cdt["id"]),
+            )
+        else:
+            next_payment = (datetime.datetime.strptime(cdt["next_payment_at"], "%Y-%m-%d %H:%M:%S")
+                             + datetime.timedelta(days=CDT_PERIOD_DAYS))
+            conn.execute(
+                "UPDATE cdts SET quincenas_pagadas = ?, next_payment_at = ? WHERE id = ?",
+                (new_quincenas_pagadas, next_payment.strftime("%Y-%m-%d %H:%M:%S"), cdt["id"]),
+            )
+
+        conn.execute(
+            "INSERT INTO cdt_payments (cdt_id, user_id, quincena_numero, interest_amount, principal_returned, paid_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (cdt["id"], cdt["user_id"], new_quincenas_pagadas, interest, principal_returned, now_str),
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def process_market_schedule():
+    """Si el horario programado está activo, enciende o apaga el mercado
+    automático según la hora actual del servidor."""
+    if db.get_config("market_schedule_enabled", "0") != "1":
+        return
+    try:
+        start_hour = int(db.get_config("market_schedule_start_hour", "9"))
+        end_hour = int(db.get_config("market_schedule_end_hour", "18"))
+    except ValueError:
+        return
+
+    current_hour = datetime.datetime.now().hour
+    if start_hour <= end_hour:
+        should_be_on = start_hour <= current_hour < end_hour
+    else:
+        # Rango que cruza la medianoche, ej. 22 -> 6
+        should_be_on = current_hour >= start_hour or current_hour < end_hour
+
+    if should_be_on and not is_market_running():
+        start_market()
+    elif not should_be_on and is_market_running():
+        stop_market()
+
+
+def process_mass_payment_schedule():
+    """Si el pago masivo recurrente está activo y ya pasó el intervalo
+    configurado desde la última vez, acredita el monto a todos los usuarios."""
+    if db.get_config("mass_payment_enabled", "0") != "1":
+        return
+    try:
+        amount = float(db.get_config("mass_payment_amount", "0"))
+        interval_hours = float(db.get_config("mass_payment_interval_hours", "24"))
+    except ValueError:
+        return
+    if amount <= 0 or interval_hours <= 0:
+        return
+
+    last_run_str = db.get_config("mass_payment_last_run", "")
+    now = datetime.datetime.now()
+    if last_run_str:
+        try:
+            last_run = datetime.datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
+            if (now - last_run).total_seconds() < interval_hours * 3600:
+                return
+        except ValueError:
+            pass
+
+    send_money_to_all_users(amount, source="recurring")
+    db.set_config("mass_payment_last_run", db.now_iso())
+
+
+def send_money_to_all_users(amount, source="manual"):
+    """Acredita 'amount' de dinero ficticio al saldo de TODOS los usuarios
+    de una sola vez, y deja registro en mass_payments."""
+    conn = db.get_connection()
+    conn.execute("UPDATE users SET balance = balance + ?", (amount,))
+    users_count = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
+    conn.execute(
+        "INSERT INTO mass_payments (amount, users_count, source, paid_at) VALUES (?, ?, ?, ?)",
+        (amount, users_count, source, db.now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    return users_count
+
+
+def scheduler_loop():
+    """Hilo único de fondo que corre durante toda la vida del proceso."""
+    while True:
+        try:
+            process_due_cdts()
+            process_market_schedule()
+            process_mass_payment_schedule()
+        except Exception as e:
+            # Nunca dejamos que un error tumbe el hilo del scheduler.
+            print(f"[scheduler_loop] error: {e}")
+        time.sleep(SCHEDULER_TICK_SECONDS)
+
+
+# --------------------------------------------------------------------------
 # Decoradores de autenticación
 # --------------------------------------------------------------------------
 def login_required(f):
@@ -250,8 +388,19 @@ def compute_summary(conn, user):
         "WHERE user_id = ? AND type = 'sell'", (user["id"],)
     ).fetchone()["s"]
 
+    # Capital bloqueado en CDTs activos: sigue siendo patrimonio del
+    # usuario, solo que no está disponible como efectivo por ahora.
+    cdt_locked = conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) as s FROM cdts WHERE user_id = ? AND status = 'active'",
+        (user["id"],)
+    ).fetchone()["s"]
+    cdt_interest_earned = conn.execute(
+        "SELECT COALESCE(SUM(interest_amount), 0) as s FROM cdt_payments WHERE user_id = ?",
+        (user["id"],)
+    ).fetchone()["s"]
+
     unrealized = current_value_total - invested_total
-    equity = user["balance"] + current_value_total
+    equity = user["balance"] + current_value_total + cdt_locked
     initial_balance = db.get_initial_balance()
     yield_pct = ((equity - initial_balance) / initial_balance * 100) if initial_balance > 0 else 0.0
 
@@ -262,6 +411,8 @@ def compute_summary(conn, user):
         "current_value": round(current_value_total, 2),
         "unrealized_profit": round(unrealized, 2),
         "realized_profit": round(realized, 2),
+        "cdt_locked": round(cdt_locked, 2),
+        "cdt_interest_earned": round(cdt_interest_earned, 2),
         "equity": round(equity, 2),
         "yield_pct": round(yield_pct, 2),
     }
@@ -676,6 +827,105 @@ def api_money_history():
     ).fetchall()
     conn.close()
     return jsonify({"ok": True, "requests": [dict(r) for r in rows]})
+
+
+# --------------------------------------------------------------------------
+# API — CDT (Certificados de Depósito a Término)
+# El usuario elige el monto y a cuántas quincenas lo mete. Cada 15 días
+# se le paga el interés (a la tasa vigente al momento de crear el CDT);
+# en la última quincena, junto con el interés se devuelve el capital.
+# El capital queda bloqueado (descontado del saldo disponible) mientras
+# el CDT está activo.
+# --------------------------------------------------------------------------
+@app.route("/api/cdt/config")
+def api_cdt_config():
+    rate = float(db.get_config("cdt_rate_percent", "2.0"))
+    return jsonify({"ok": True, "rate_percent": rate, "period_days": CDT_PERIOD_DAYS})
+
+
+@app.route("/api/cdt/create", methods=["POST"])
+@login_required
+def api_cdt_create():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        amount = round(float(data.get("amount", 0)), 2)
+        quincenas = int(data.get("quincenas", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Datos inválidos."}), 400
+
+    if amount <= 0:
+        return jsonify({"ok": False, "error": "El monto debe ser mayor que cero."}), 400
+    if quincenas < 1 or quincenas > 48:
+        return jsonify({"ok": False, "error": "Elige entre 1 y 48 quincenas."}), 400
+
+    conn = db.get_connection()
+    user = conn.execute("SELECT * FROM users WHERE id = ?", (session["user_id"],)).fetchone()
+
+    if amount > user["balance"] + 1e-9:
+        conn.close()
+        return jsonify({"ok": False, "error": "Saldo insuficiente para abrir este CDT."}), 400
+
+    rate = float(db.get_config("cdt_rate_percent", "2.0"))
+    now = datetime.datetime.now()
+    next_payment = now + datetime.timedelta(days=CDT_PERIOD_DAYS)
+
+    new_balance = round(user["balance"] - amount, 2)
+    conn.execute("UPDATE users SET balance = ? WHERE id = ?", (new_balance, user["id"]))
+    conn.execute(
+        "INSERT INTO cdts (user_id, amount, quincenas_total, quincenas_pagadas, rate_percent, "
+        "status, next_payment_at, created_at) VALUES (?, ?, ?, 0, ?, 'active', ?, ?)",
+        (user["id"], amount, quincenas, rate, next_payment.strftime("%Y-%m-%d %H:%M:%S"), db.now_iso()),
+    )
+    conn.commit()
+
+    user = conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+    summary = compute_summary(conn, user)
+    conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": f"Abriste un CDT de {amount} a {quincenas} quincenas, con {rate}% de interés por quincena.",
+        "summary": summary,
+    })
+
+
+@app.route("/api/cdt/list")
+@login_required
+def api_cdt_list():
+    conn = db.get_connection()
+    rows = conn.execute(
+        "SELECT * FROM cdts WHERE user_id = ? ORDER BY id DESC", (session["user_id"],)
+    ).fetchall()
+    cdts = []
+    for c in rows:
+        expected_interest_total = round(c["amount"] * (c["rate_percent"] / 100) * c["quincenas_total"], 2)
+        cdts.append({
+            "id": c["id"],
+            "amount": c["amount"],
+            "quincenas_total": c["quincenas_total"],
+            "quincenas_pagadas": c["quincenas_pagadas"],
+            "rate_percent": c["rate_percent"],
+            "status": c["status"],
+            "next_payment_at": c["next_payment_at"] if c["status"] == "active" else None,
+            "expected_interest_total": expected_interest_total,
+            "created_at": c["created_at"],
+            "completed_at": c["completed_at"],
+        })
+    conn.close()
+    return jsonify({"ok": True, "cdts": cdts})
+
+
+@app.route("/api/cdt/payments")
+@login_required
+def api_cdt_payments():
+    conn = db.get_connection()
+    rows = conn.execute("""
+        SELECT p.*, c.quincenas_total FROM cdt_payments p
+        JOIN cdts c ON c.id = p.cdt_id
+        WHERE p.user_id = ? ORDER BY p.id DESC
+    """, (session["user_id"],)).fetchall()
+    conn.close()
+    return jsonify({"ok": True, "payments": [dict(r) for r in rows]})
 
 
 # --------------------------------------------------------------------------
@@ -1216,6 +1466,132 @@ def admin_market_status():
     return jsonify({"ok": True, "running": is_market_running()})
 
 
+@app.route("/admin/api/market/schedule", methods=["GET", "POST"])
+@admin_required
+def admin_market_schedule():
+    """Configura el horario en que el mercado automático debe encenderse
+    y apagarse solo (por ejemplo, de 9 a.m. a 6 p.m., hora del servidor)."""
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        enabled = bool(data.get("enabled"))
+        try:
+            start_hour = int(data.get("start_hour", 9))
+            end_hour = int(data.get("end_hour", 18))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Horas inválidas."}), 400
+
+        if not (0 <= start_hour <= 23) or not (0 <= end_hour <= 23):
+            return jsonify({"ok": False, "error": "Las horas deben estar entre 0 y 23."}), 400
+
+        db.set_config("market_schedule_enabled", "1" if enabled else "0")
+        db.set_config("market_schedule_start_hour", start_hour)
+        db.set_config("market_schedule_end_hour", end_hour)
+        return jsonify({"ok": True})
+
+    return jsonify({
+        "ok": True,
+        "enabled": db.get_config("market_schedule_enabled", "0") == "1",
+        "start_hour": int(db.get_config("market_schedule_start_hour", "9")),
+        "end_hour": int(db.get_config("market_schedule_end_hour", "18")),
+        "server_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
+
+# ---- CDT: tasa de interés y listado para el administrador ----
+@app.route("/admin/api/cdt/rate", methods=["GET", "POST"])
+@admin_required
+def admin_cdt_rate():
+    """El admin consulta o modifica el % de interés que se paga por
+    quincena. El cambio solo afecta a los CDTs que se abran de ahí en
+    adelante; los ya existentes conservan la tasa con la que se crearon."""
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        try:
+            rate = float(data.get("rate_percent"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Porcentaje inválido."}), 400
+        if rate < 0 or rate > 100:
+            return jsonify({"ok": False, "error": "El porcentaje debe estar entre 0 y 100."}), 400
+        db.set_config("cdt_rate_percent", rate)
+        return jsonify({"ok": True})
+
+    return jsonify({"ok": True, "rate_percent": float(db.get_config("cdt_rate_percent", "2.0"))})
+
+
+@app.route("/admin/api/cdt/list")
+@admin_required
+def admin_cdt_list():
+    """Lista todos los CDTs de todos los usuarios, para supervisión del admin."""
+    conn = db.get_connection()
+    rows = conn.execute("""
+        SELECT c.*, u.name as user_name
+        FROM cdts c JOIN users u ON u.id = c.user_id
+        ORDER BY c.status = 'active' DESC, c.id DESC
+    """).fetchall()
+    conn.close()
+    return jsonify({"ok": True, "cdts": [dict(r) for r in rows]})
+
+
+# ---- Pagos masivos del admin a todos los usuarios ----
+@app.route("/admin/api/mass-payment/send-now", methods=["POST"])
+@admin_required
+def admin_mass_payment_send_now():
+    """Le envía dinero ficticio a TODOS los usuarios de una sola vez,
+    con un solo comando/botón."""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        amount = float(data.get("amount", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Monto inválido."}), 400
+    if amount <= 0:
+        return jsonify({"ok": False, "error": "El monto debe ser mayor que cero."}), 400
+
+    users_count = send_money_to_all_users(amount, source="manual")
+    return jsonify({"ok": True, "users_count": users_count})
+
+
+@app.route("/admin/api/mass-payment/schedule", methods=["GET", "POST"])
+@admin_required
+def admin_mass_payment_schedule():
+    """Configura un pago automático recurrente: cada X horas, se le
+    acredita un monto fijo a TODOS los usuarios, sin intervención manual."""
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        enabled = bool(data.get("enabled"))
+        try:
+            amount = float(data.get("amount", 0))
+            interval_hours = float(data.get("interval_hours", 24))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Datos inválidos."}), 400
+        if enabled and amount <= 0:
+            return jsonify({"ok": False, "error": "El monto debe ser mayor que cero."}), 400
+        if interval_hours <= 0:
+            return jsonify({"ok": False, "error": "El intervalo debe ser mayor que cero."}), 400
+
+        db.set_config("mass_payment_enabled", "1" if enabled else "0")
+        db.set_config("mass_payment_amount", amount)
+        db.set_config("mass_payment_interval_hours", interval_hours)
+        return jsonify({"ok": True})
+
+    last_run = db.get_config("mass_payment_last_run", "")
+    return jsonify({
+        "ok": True,
+        "enabled": db.get_config("mass_payment_enabled", "0") == "1",
+        "amount": float(db.get_config("mass_payment_amount", "0")),
+        "interval_hours": float(db.get_config("mass_payment_interval_hours", "24")),
+        "last_run": last_run or None,
+    })
+
+
+@app.route("/admin/api/mass-payment/history")
+@admin_required
+def admin_mass_payment_history():
+    conn = db.get_connection()
+    rows = conn.execute("SELECT * FROM mass_payments ORDER BY id DESC LIMIT 50").fetchall()
+    conn.close()
+    return jsonify({"ok": True, "payments": [dict(r) for r in rows]})
+
+
 # --------------------------------------------------------------------------
 # Estadísticas globales (para el panel de administración)
 # --------------------------------------------------------------------------
@@ -1256,6 +1632,10 @@ db.init_db()
 # duplique en cada proceso.
 if db.get_config("market_running", "0") == "1":
     start_market()
+
+# El scheduler (CDT, horario del mercado, pagos masivos recurrentes)
+# corre siempre, independientemente de si el mercado manual está activo.
+threading.Thread(target=scheduler_loop, daemon=True).start()
 
 
 # --------------------------------------------------------------------------
