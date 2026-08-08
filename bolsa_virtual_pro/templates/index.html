@@ -16,22 +16,13 @@
       <span class="brand">Bolsa Virtual Pro</span>
     </div>
     <h1>Entra con tu cuenta</h1>
-    <p class="sub">Si es la primera vez, se crea tu cuenta al instante. Empieza con $0 — el administrador te asigna tu dinero ficticio desde el panel.</p>
+    <p class="sub">Si es la primera vez, se crea tu cuenta al instante. Empieza con $0 — solicita tu dinero ficticio al administrador desde el panel.</p>
 
     <label class="field-label" for="nameInput">Usuario</label>
     <input id="nameInput" class="input" type="text" placeholder="Ej: Carlos Ramírez" maxlength="40" autocomplete="username">
 
     <label class="field-label mt-16" for="passwordInput">Contraseña</label>
     <input id="passwordInput" class="input" type="password" placeholder="Mínimo 4 caracteres" maxlength="60" autocomplete="current-password">
-
-    <label class="field-label mt-16" for="courseInput">Curso</label>
-    <select id="courseInput" class="input">
-      <option value="">Selecciona tu curso</option>
-      <option value="8">Octavo (8)</option>
-      <option value="9">Noveno (9)</option>
-      <option value="10">Décimo (10)</option>
-      <option value="11">Once (11)</option>
-    </select>
 
     <button id="loginBtn" class="btn btn-primary">Entrar a la bolsa</button>
 
@@ -82,6 +73,25 @@
           <h3>Tus estadísticas</h3>
         </div>
         <div class="stats-grid" id="userStatsGrid"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Solicitudes de dinero ficticio</h3></div>
+        <p class="text-dim" style="margin-top:0;font-size:13.5px;">
+          Tanto los depósitos como los retiros deben ser aprobados por el administrador antes de que tu saldo cambie.
+        </p>
+
+        <div class="tabs-mini">
+          <button class="tab-mini-btn active buy" id="depositTabBtn">Solicitar depósito</button>
+          <button class="tab-mini-btn sell" id="withdrawTabBtn">Solicitar retiro</button>
+        </div>
+
+        <div class="inline-form">
+          <input id="depositAmountInput" class="input" type="number" min="1" placeholder="Monto a solicitar">
+          <input id="depositNoteInput" class="input" type="text" placeholder="Motivo (opcional)">
+          <button id="requestDepositBtn" class="btn btn-buy" style="margin-top:0;width:auto;">Enviar solicitud</button>
+        </div>
+        <div id="moneyRequestsWrap" class="mt-16"></div>
       </div>
 
       <div class="panel">

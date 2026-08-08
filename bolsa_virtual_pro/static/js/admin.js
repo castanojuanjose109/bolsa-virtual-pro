@@ -51,7 +51,7 @@ function enterAdminPanel() {
   refreshAdminOverview();
   loadAdminUsers();
   loadAdminStocks();
-  loadLedger();
+  loadAdminDeposits();
   loadMarketSchedule();
   loadCdtRate();
   loadAdminCdtList();
@@ -60,7 +60,7 @@ function enterAdminPanel() {
   adminRefreshTimer = setInterval(() => {
     refreshAdminOverview();
     if (document.getElementById("adminMarketView").classList.contains("active")) { loadAdminStocks(); loadMarketSchedule(); }
-    if (document.getElementById("adminLedgerView").classList.contains("active")) loadLedger();
+    if (document.getElementById("adminDepositsView").classList.contains("active")) loadAdminDeposits();
     if (document.getElementById("adminCdtView").classList.contains("active")) loadAdminCdtList();
     if (document.getElementById("adminMassPaymentView").classList.contains("active")) { loadMassPaymentSchedule(); loadMassPaymentHistory(); }
   }, 4000);
@@ -86,7 +86,7 @@ function bindAdminAppEvents() {
       btn.classList.add("active");
       if (btn.dataset.view === "adminUsersView") loadAdminUsers();
       if (btn.dataset.view === "adminMarketView") { loadAdminStocks(); loadMarketSchedule(); }
-      if (btn.dataset.view === "adminLedgerView") loadLedger();
+      if (btn.dataset.view === "adminDepositsView") loadAdminDeposits();
       if (btn.dataset.view === "adminCdtView") { loadCdtRate(); loadAdminCdtList(); }
       if (btn.dataset.view === "adminMassPaymentView") { loadMassPaymentSchedule(); loadMassPaymentHistory(); }
     });
@@ -156,43 +156,73 @@ async function refreshAdminOverview() {
 
   document.getElementById("marketStatusLabel").textContent = res.market_running ? "activo 🟢" : "detenido 🔴";
 
+  const badge = document.getElementById("pendingDepositsBadge");
+  if (badge) badge.textContent = res.pending_money_requests > 0 ? `(${res.pending_money_requests})` : "";
+
   document.getElementById("adminStatsGrid").innerHTML = `
     <div class="stat-card"><div class="label">Usuarios registrados</div><div class="value">${res.total_users}</div></div>
     <div class="stat-card"><div class="label">Operaciones totales</div><div class="value">${res.total_trades}</div></div>
     <div class="stat-card"><div class="label">Dinero en circulación</div><div class="value">${formatMoney(res.total_balance)}</div></div>
     <div class="stat-card"><div class="label">Acciones activas</div><div class="value">${res.active_stocks}</div></div>
+    <div class="stat-card"><div class="label">Solicitudes pendientes</div><div class="value ${res.pending_money_requests > 0 ? 'negative' : ''}">${res.pending_money_requests}</div></div>
   `;
 }
 
 /* --------------------------------------------------------------------
-   Historial de transacciones total (todo el dinero movido en la plataforma)
+   Solicitudes de dinero ficticio (depósito y retiro)
    -------------------------------------------------------------------- */
-async function loadLedger() {
-  const res = await apiFetch("/admin/api/ledger");
+async function loadAdminDeposits() {
+  const res = await apiFetch("/admin/api/money-requests");
   if (!res.ok) return;
-  const wrap = document.getElementById("adminLedgerTableWrap");
+  const wrap = document.getElementById("adminDepositsTableWrap");
 
-  if (res.movements.length === 0) {
-    wrap.innerHTML = `<div class="empty-state">Todavía no se ha movido dinero en la plataforma.</div>`;
+  if (res.requests.length === 0) {
+    wrap.innerHTML = `<div class="empty-state">No hay solicitudes de dinero todavía.</div>`;
     return;
   }
 
+  const statusLabel = { pending: "⏳ Pendiente", approved: "✅ Aprobado", rejected: "❌ Rechazado" };
+  const typeLabel = { deposit: "🟢 Depósito", withdraw: "🔴 Retiro" };
+
   wrap.innerHTML = `
     <table class="data-table">
-      <thead><tr><th>Fecha</th><th>Usuario</th><th>Tipo</th><th>Detalle</th><th>Monto</th></tr></thead>
+      <thead><tr><th>Fecha</th><th>Usuario</th><th>Tipo</th><th>Monto</th><th>Motivo</th><th>Estado</th><th></th></tr></thead>
       <tbody>
-        ${res.movements.map((m) => `
+        ${res.requests.map((r) => `
           <tr>
-            <td>${m.ts || "—"}</td>
-            <td>${m.user_name}</td>
-            <td>${m.kind}</td>
-            <td>${m.detail || "—"}</td>
-            <td class="${m.amount >= 0 ? 'positive' : 'negative'}">${m.amount >= 0 ? "+" : ""}${formatMoney(m.amount)}</td>
+            <td>${r.requested_at}</td>
+            <td>${r.user_name}</td>
+            <td>${typeLabel[r.type] || r.type}</td>
+            <td>${formatMoney(r.amount)}</td>
+            <td>${r.note || "—"}</td>
+            <td>${statusLabel[r.status]}</td>
+            <td>
+              ${r.status === "pending" ? `
+                <div class="action-row">
+                  <button class="btn btn-outline-green btn-sm" data-approve-deposit="${r.id}">Aprobar</button>
+                  <button class="btn btn-outline-red btn-sm" data-reject-deposit="${r.id}">Rechazar</button>
+                </div>
+              ` : "—"}
+            </td>
           </tr>
         `).join("")}
       </tbody>
     </table>
   `;
+
+  res.requests.filter((r) => r.status === "pending").forEach((r) => {
+    wrap.querySelector(`[data-approve-deposit="${r.id}"]`).addEventListener("click", () => resolveDeposit(r.id, "approve"));
+    wrap.querySelector(`[data-reject-deposit="${r.id}"]`).addEventListener("click", () => resolveDeposit(r.id, "reject"));
+  });
+}
+
+async function resolveDeposit(requestId, action) {
+  const res = await apiFetch(`/admin/api/money-requests/${requestId}/${action}`, { method: "POST" });
+  if (!res.ok) { showToast(res.error || "No se pudo procesar la solicitud.", "error"); return; }
+  showToast(action === "approve" ? "Solicitud aprobada y saldo actualizado." : "Solicitud rechazada.", "success");
+  loadAdminDeposits();
+  refreshAdminOverview();
+  loadAdminUsers();
 }
 
 /* --------------------------------------------------------------------
@@ -202,13 +232,11 @@ async function createUser() {
   const name = document.getElementById("newUserName").value.trim();
   const balance = document.getElementById("newUserBalance").value;
   const password = document.getElementById("newUserPassword").value.trim();
-  const course = document.getElementById("newUserCourse").value;
   if (!name) { showToast("Escribe un nombre para el nuevo usuario.", "error"); return; }
 
   const body = { name };
   if (balance) body.balance = parseFloat(balance);
   if (password) body.password = password;
-  if (course) body.course = course;
 
   const res = await apiFetch("/admin/api/users/create", { method: "POST", body });
   if (!res.ok) { showToast(res.error || "No se pudo crear el usuario.", "error"); return; }
@@ -221,7 +249,6 @@ async function createUser() {
   document.getElementById("newUserName").value = "";
   document.getElementById("newUserBalance").value = "";
   document.getElementById("newUserPassword").value = "";
-  document.getElementById("newUserCourse").value = "";
   loadAdminUsers();
 }
 
@@ -237,22 +264,16 @@ async function loadAdminUsers() {
 
   wrap.innerHTML = `
     <table class="data-table">
-      <thead><tr><th>Nombre</th><th>Curso</th><th>Saldo</th><th>Invertido</th><th>Patrimonio</th><th>Estado</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Saldo</th><th>Invertido</th><th>Patrimonio</th><th>Estado</th><th></th></tr></thead>
       <tbody>
         ${res.users.map((u) => `
           <tr>
             <td>${u.name}</td>
-            <td>${u.course || "—"}</td>
             <td>${formatMoney(u.balance)}</td>
             <td>${formatMoney(u.invested)}</td>
             <td>${formatMoney(u.equity)}</td>
             <td>${u.is_blocked ? '<span class="badge-sell">BLOQUEADO</span>' : '<span class="badge-buy">ACTIVO</span>'}</td>
-            <td>
-              <div class="action-row">
-                <button class="btn btn-ghost btn-sm" data-edit-user="${u.id}">Gestionar</button>
-                <button class="btn btn-outline-red btn-sm" data-delete-user="${u.id}" data-delete-name="${u.name}">Eliminar</button>
-              </div>
-            </td>
+            <td><button class="btn btn-ghost btn-sm" data-edit-user="${u.id}">Gestionar</button></td>
           </tr>
         `).join("")}
       </tbody>
@@ -261,30 +282,13 @@ async function loadAdminUsers() {
 
   res.users.forEach((u) => {
     wrap.querySelector(`[data-edit-user="${u.id}"]`).addEventListener("click", () => openEditUserModal(u));
-    wrap.querySelector(`[data-delete-user="${u.id}"]`).addEventListener("click", () => deleteUser(u.id, u.name));
   });
-}
-
-async function deleteUser(userId, userName) {
-  const confirmed = confirm(
-    `¿Eliminar la cuenta de "${userName}" permanentemente?\n\nEsto borra también su portafolio, sus operaciones y sus CDTs. Esta acción NO se puede deshacer.`
-  );
-  if (!confirmed) return;
-
-  const res = await apiFetch(`/admin/api/users/${userId}/delete`, { method: "POST" });
-  if (!res.ok) { showToast(res.error || "No se pudo eliminar el usuario.", "error"); return; }
-
-  showToast(`Cuenta de "${res.deleted_name}" eliminada.`, "success");
-  loadAdminUsers();
-  refreshAdminOverview();
-  loadLedger();
 }
 
 async function openEditUserModal(user) {
   editingUserId = user.id;
   document.getElementById("editUserSub").textContent = `ID #${user.id} — creado el ${user.created_at || "—"}`;
   document.getElementById("editUserName").value = user.name;
-  document.getElementById("editUserCourse").value = user.course || "";
   document.getElementById("editUserBalance").value = user.balance;
   document.getElementById("moneyAmountInput").value = "";
   document.getElementById("stockQtyForUser").value = "";
@@ -305,9 +309,8 @@ async function saveUserChanges() {
   const name = document.getElementById("editUserName").value.trim();
   const balance = document.getElementById("editUserBalance").value;
   const newPassword = document.getElementById("editUserNewPassword").value.trim();
-  const course = document.getElementById("editUserCourse").value;
 
-  const body = { name, balance: parseFloat(balance), course };
+  const body = { name, balance: parseFloat(balance) };
   if (newPassword) body.new_password = newPassword;
 
   const res = await apiFetch(`/admin/api/users/${editingUserId}/update`, { method: "POST", body });
@@ -518,28 +521,22 @@ async function loadAdminCdtList() {
 }
 
 /* --------------------------------------------------------------------
-   Pagos masivos a todos los usuarios (o a un curso específico)
+   Pagos masivos a todos los usuarios
    -------------------------------------------------------------------- */
-function courseLabel(course) {
-  return course ? `curso ${course}` : "TODOS los usuarios";
-}
-
 async function sendMassPaymentNow() {
   const amount = parseFloat(document.getElementById("massPaymentAmountNow").value);
-  const targetCourse = document.getElementById("massPaymentTargetNow").value;
   if (!amount || amount <= 0) { showToast("Ingresa un monto válido.", "error"); return; }
-  if (!confirm(`¿Enviar ${formatMoney(amount)} a ${courseLabel(targetCourse)} ahora mismo?`)) return;
+  if (!confirm(`¿Enviar ${formatMoney(amount)} a TODOS los usuarios registrados ahora mismo?`)) return;
 
   const btn = document.getElementById("sendMassPaymentNowBtn");
   btn.disabled = true;
-  const res = await apiFetch("/admin/api/mass-payment/send-now", { method: "POST", body: { amount, target_course: targetCourse } });
+  const res = await apiFetch("/admin/api/mass-payment/send-now", { method: "POST", body: { amount } });
   btn.disabled = false;
 
   if (!res.ok) { showToast(res.error || "No se pudo enviar el pago.", "error"); return; }
   showToast(`Se envió ${formatMoney(amount)} a ${res.users_count} usuario(s).`, "success");
   document.getElementById("massPaymentAmountNow").value = "";
   loadMassPaymentHistory();
-  loadLedger();
   refreshAdminOverview();
 }
 
@@ -547,23 +544,21 @@ async function loadMassPaymentSchedule() {
   const res = await apiFetch("/admin/api/mass-payment/schedule");
   if (!res.ok) return;
   document.getElementById("massPaymentRecurringAmount").value = res.amount || "";
-  document.getElementById("massPaymentIntervalDays").value = res.interval_days || 1;
-  document.getElementById("massPaymentTargetRecurring").value = res.target_course || "";
+  document.getElementById("massPaymentIntervalHours").value = res.interval_hours || 24;
   document.getElementById("massPaymentStatusLabel").textContent = res.enabled ? "activo 🟢" : "desactivado 🔴";
   document.getElementById("massPaymentLastRunLabel").textContent = res.last_run || "nunca";
 }
 
 async function saveMassPaymentSchedule() {
   const amount = parseFloat(document.getElementById("massPaymentRecurringAmount").value);
-  const intervalDays = parseFloat(document.getElementById("massPaymentIntervalDays").value);
-  const targetCourse = document.getElementById("massPaymentTargetRecurring").value;
+  const intervalHours = parseFloat(document.getElementById("massPaymentIntervalHours").value);
   if (!amount || amount <= 0) { showToast("Ingresa un monto válido.", "error"); return; }
-  if (!intervalDays || intervalDays <= 0) { showToast("Ingresa un intervalo válido en días.", "error"); return; }
+  if (!intervalHours || intervalHours <= 0) { showToast("Ingresa un intervalo válido en horas.", "error"); return; }
 
   const current = await apiFetch("/admin/api/mass-payment/schedule");
   const res = await apiFetch("/admin/api/mass-payment/schedule", {
     method: "POST",
-    body: { enabled: current.enabled, amount, interval_days: intervalDays, target_course: targetCourse },
+    body: { enabled: current.enabled, amount, interval_hours: intervalHours },
   });
   if (!res.ok) { showToast(res.error || "No se pudo guardar.", "error"); return; }
   showToast("Configuración de pago recurrente guardada.", "success");
@@ -572,14 +567,13 @@ async function saveMassPaymentSchedule() {
 
 async function toggleMassPaymentSchedule(enabled) {
   const amount = parseFloat(document.getElementById("massPaymentRecurringAmount").value);
-  const intervalDays = parseFloat(document.getElementById("massPaymentIntervalDays").value);
-  const targetCourse = document.getElementById("massPaymentTargetRecurring").value;
+  const intervalHours = parseFloat(document.getElementById("massPaymentIntervalHours").value);
   if (enabled && (!amount || amount <= 0)) { showToast("Ingresa un monto válido antes de activar.", "error"); return; }
-  if (enabled && (!intervalDays || intervalDays <= 0)) { showToast("Ingresa un intervalo válido antes de activar.", "error"); return; }
+  if (enabled && (!intervalHours || intervalHours <= 0)) { showToast("Ingresa un intervalo válido antes de activar.", "error"); return; }
 
   const res = await apiFetch("/admin/api/mass-payment/schedule", {
     method: "POST",
-    body: { enabled, amount: amount || 0, interval_days: intervalDays || 1, target_course: targetCourse },
+    body: { enabled, amount: amount || 0, interval_hours: intervalHours || 24 },
   });
   if (!res.ok) { showToast(res.error || "No se pudo aplicar el cambio.", "error"); return; }
   showToast(enabled ? "Pago recurrente activado." : "Pago recurrente desactivado.", "success");
@@ -599,14 +593,13 @@ async function loadMassPaymentHistory() {
   const sourceLabel = { manual: "Manual", recurring: "Recurrente" };
   wrap.innerHTML = `
     <table class="data-table">
-      <thead><tr><th>Fecha</th><th>Monto por usuario</th><th>Usuarios</th><th>Grupo</th><th>Tipo</th></tr></thead>
+      <thead><tr><th>Fecha</th><th>Monto por usuario</th><th>Usuarios</th><th>Tipo</th></tr></thead>
       <tbody>
         ${res.payments.map((p) => `
           <tr>
             <td>${p.paid_at}</td>
             <td>${formatMoney(p.amount)}</td>
             <td>${p.users_count}</td>
-            <td>${p.target_course ? `Curso ${p.target_course}` : "Todos"}</td>
             <td>${sourceLabel[p.source] || p.source}</td>
           </tr>
         `).join("")}

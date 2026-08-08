@@ -17,12 +17,6 @@ import sqlite3
 import os
 import datetime
 
-try:
-    from zoneinfo import ZoneInfo
-    COLOMBIA_TZ = ZoneInfo("America/Bogota")
-except Exception:
-    COLOMBIA_TZ = None
-
 # Ruta absoluta del archivo de base de datos
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "bolsa.db")
@@ -31,9 +25,6 @@ DB_PATH = os.path.join(BASE_DIR, "bolsa.db")
 # Se deja en 0: los usuarios deben solicitar depósitos, que el
 # administrador aprueba o rechaza desde el panel /admin.
 INITIAL_BALANCE = 0.0
-
-# Cursos disponibles para las cuentas de los estudiantes.
-CURSOS_DISPONIBLES = ["8", "9", "10", "11"]
 
 # Empresas ficticias que forman el mercado por defecto.
 # Precios pensados para ser accesibles (permiten comprar varias acciones
@@ -62,19 +53,9 @@ def get_connection():
     return conn
 
 
-def now_dt():
-    """Fecha/hora actual en zona horaria de Colombia (America/Bogota),
-    sin importar en qué país/servidor esté corriendo la aplicación.
-    Si por alguna razón el sistema no tiene datos de zona horaria
-    disponibles (poco común), cae de vuelta a la hora local del equipo."""
-    if COLOMBIA_TZ is not None:
-        return datetime.datetime.now(COLOMBIA_TZ).replace(tzinfo=None)
-    return datetime.datetime.now()
-
-
 def now_iso():
-    """Marca de tiempo estándar (hora de Colombia) usada en toda la app."""
-    return now_dt().strftime("%Y-%m-%d %H:%M:%S")
+    """Marca de tiempo estándar ISO 8601 usada en toda la app."""
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def init_db():
@@ -94,7 +75,6 @@ def init_db():
             password_hash TEXT NOT NULL,
             balance REAL NOT NULL DEFAULT 0,
             is_blocked INTEGER NOT NULL DEFAULT 0,
-            course TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL
         )
     """)
@@ -208,21 +188,7 @@ def init_db():
             amount REAL NOT NULL,
             users_count INTEGER NOT NULL,
             source TEXT NOT NULL,   -- 'manual' | 'recurring'
-            target_course TEXT NOT NULL DEFAULT '',  -- '' = todos los cursos
             paid_at TEXT NOT NULL
-        )
-    """)
-
-    # --- Ajustes manuales de saldo hechos por el admin (+/-) desde la
-    # ficha de un usuario; quedan registrados para el historial total. ---
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS admin_adjustments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            amount REAL NOT NULL,      -- positivo = se añadió, negativo = se quitó
-            reason TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
         )
     """)
 
@@ -234,19 +200,6 @@ def init_db():
         )
     """)
 
-    conn.commit()
-
-    # --- Migraciones suaves para bases de datos creadas con una versión
-    # anterior del esquema (agregan columnas nuevas si todavía no existen,
-    # sin borrar ningún dato). Es seguro correr esto en cada arranque. ---
-    def _column_exists(table, column):
-        cols = [r["name"] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()]
-        return column in cols
-
-    if not _column_exists("users", "course"):
-        cur.execute("ALTER TABLE users ADD COLUMN course TEXT NOT NULL DEFAULT ''")
-    if not _column_exists("mass_payments", "target_course"):
-        cur.execute("ALTER TABLE mass_payments ADD COLUMN target_course TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
     # Sembrar acciones por defecto si la tabla está vacía
@@ -275,15 +228,14 @@ def init_db():
         "initial_balance": str(INITIAL_BALANCE),
         # CDT: % de interés que se paga cada quincena (15 días)
         "cdt_rate_percent": "2.0",
-        # Horario programado del mercado automático (hora de Colombia, 0-23)
+        # Horario programado del mercado automático (hora del servidor, 0-23)
         "market_schedule_enabled": "0",
         "market_schedule_start_hour": "9",
         "market_schedule_end_hour": "18",
-        # Pago recurrente del admin a todos los usuarios (o a un curso)
+        # Pago recurrente del admin a todos los usuarios
         "mass_payment_enabled": "0",
         "mass_payment_amount": "0",
-        "mass_payment_interval_days": "1",
-        "mass_payment_target_course": "",
+        "mass_payment_interval_hours": "24",
         "mass_payment_last_run": "",
     }
     for key, value in defaults.items():
@@ -315,80 +267,3 @@ def set_config(key, value):
 
 def get_initial_balance():
     return float(get_config("initial_balance", INITIAL_BALANCE))
-
-
-def get_user_ids_by_course(course):
-    """Devuelve los ids de usuario que pertenecen a un curso dado.
-    Si course es '' o None, devuelve TODOS los usuarios."""
-    conn = get_connection()
-    if course:
-        rows = conn.execute("SELECT id FROM users WHERE course = ?", (course,)).fetchall()
-    else:
-        rows = conn.execute("SELECT id FROM users").fetchall()
-    conn.close()
-    return [r["id"] for r in rows]
-
-
-def get_ledger(limit=500):
-    """Historial TOTAL de movimientos de dinero de toda la plataforma:
-    compras, ventas, pagos de CDT, pagos masivos, ajustes manuales del
-    admin y depósitos/retiros aprobados en el pasado. Todo en un solo
-    listado ordenado del más reciente al más antiguo."""
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT u.name as user_name, 'Compra' as kind, -t.total as amount,
-               (printf('%.4f', t.quantity) || ' ' || s.symbol || ' @ ' || printf('%.2f', t.price)) as detail,
-               t.timestamp as ts
-        FROM transactions t
-        JOIN users u ON u.id = t.user_id
-        JOIN stocks s ON s.id = t.stock_id
-        WHERE t.type = 'buy'
-
-        UNION ALL
-
-        SELECT u.name, 'Venta', t.total,
-               (printf('%.4f', t.quantity) || ' ' || s.symbol || ' @ ' || printf('%.2f', t.price)),
-               t.timestamp
-        FROM transactions t
-        JOIN users u ON u.id = t.user_id
-        JOIN stocks s ON s.id = t.stock_id
-        WHERE t.type = 'sell'
-
-        UNION ALL
-
-        SELECT u.name, 'Pago de CDT', (p.interest_amount + p.principal_returned),
-               ('Quincena ' || p.quincena_numero || CASE WHEN p.principal_returned > 0 THEN ' (incluye capital)' ELSE '' END),
-               p.paid_at
-        FROM cdt_payments p
-        JOIN users u ON u.id = p.user_id
-
-        UNION ALL
-
-        SELECT ('Todos los usuarios (' || m.users_count || ')'),
-               CASE WHEN m.source = 'manual' THEN 'Pago masivo' ELSE 'Pago masivo recurrente' END,
-               m.amount,
-               ('Grupo: ' || CASE WHEN m.target_course = '' THEN 'todos' ELSE ('curso ' || m.target_course) END),
-               m.paid_at
-        FROM mass_payments m
-
-        UNION ALL
-
-        SELECT u.name, CASE WHEN a.amount >= 0 THEN 'Ajuste admin (+)' ELSE 'Ajuste admin (-)' END,
-               a.amount, COALESCE(NULLIF(a.reason, ''), 'Sin motivo'), a.created_at
-        FROM admin_adjustments a
-        JOIN users u ON u.id = a.user_id
-
-        UNION ALL
-
-        SELECT u.name, CASE WHEN d.type = 'deposit' THEN 'Depósito aprobado' ELSE 'Retiro aprobado' END,
-               CASE WHEN d.type = 'deposit' THEN d.amount ELSE -d.amount END,
-               COALESCE(NULLIF(d.note, ''), '—'), d.resolved_at
-        FROM deposit_requests d
-        JOIN users u ON u.id = d.user_id
-        WHERE d.status = 'approved'
-
-        ORDER BY ts DESC
-        LIMIT ?
-    """, (limit,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]

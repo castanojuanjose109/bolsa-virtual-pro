@@ -46,11 +46,9 @@ async function tryAutoLogin() {
 async function doLogin() {
   const nameInput = document.getElementById("nameInput");
   const passwordInput = document.getElementById("passwordInput");
-  const courseInput = document.getElementById("courseInput");
   const errorBox = document.getElementById("loginError");
   const name = nameInput.value.trim();
   const password = passwordInput.value;
-  const course = courseInput.value;
 
   errorBox.classList.remove("show");
 
@@ -64,17 +62,12 @@ async function doLogin() {
     errorBox.classList.add("show");
     return;
   }
-  if (!course) {
-    errorBox.textContent = "Selecciona tu curso.";
-    errorBox.classList.add("show");
-    return;
-  }
 
   const loginBtn = document.getElementById("loginBtn");
   loginBtn.disabled = true;
   loginBtn.textContent = "Entrando...";
 
-  const res = await apiFetch("/api/login", { method: "POST", body: { name, password, course } });
+  const res = await apiFetch("/api/login", { method: "POST", body: { name, password } });
 
   loginBtn.disabled = false;
   loginBtn.textContent = "Entrar a la bolsa";
@@ -125,6 +118,8 @@ function bindAppEvents() {
   document.getElementById("tradeModalOverlay").addEventListener("click", (e) => {
     if (e.target.id === "tradeModalOverlay") closeTradeModal();
   });
+
+  bindMoneyRequestEvents();
 
   document.getElementById("cdtAmountInput").addEventListener("input", updateCdtSimulation);
   document.getElementById("cdtQuincenasInput").addEventListener("input", updateCdtSimulation);
@@ -185,6 +180,104 @@ async function loadMeSummary() {
   document.getElementById("userBalanceLabel").textContent = formatMoney(res.summary.available_cash);
   renderDashboardStats(res.summary);
   loadUserStats();
+  loadMoneyRequests();
+}
+
+/* --------------------------------------------------------------------
+   Solicitudes de dinero ficticio: depósito y retiro (requieren aprobación admin)
+   -------------------------------------------------------------------- */
+let moneyRequestMode = "deposit"; // 'deposit' | 'withdraw'
+
+function bindMoneyRequestEvents() {
+  document.getElementById("depositTabBtn").addEventListener("click", () => setMoneyRequestMode("deposit"));
+  document.getElementById("withdrawTabBtn").addEventListener("click", () => setMoneyRequestMode("withdraw"));
+  document.getElementById("requestDepositBtn").addEventListener("click", requestMoney);
+}
+
+function setMoneyRequestMode(mode) {
+  moneyRequestMode = mode;
+  const depositTab = document.getElementById("depositTabBtn");
+  const withdrawTab = document.getElementById("withdrawTabBtn");
+  const btn = document.getElementById("requestDepositBtn");
+
+  depositTab.classList.toggle("active", mode === "deposit");
+  withdrawTab.classList.toggle("active", mode === "withdraw");
+
+  if (mode === "deposit") {
+    btn.className = "btn btn-buy";
+    btn.style.marginTop = "0";
+    btn.style.width = "auto";
+    btn.textContent = "Enviar solicitud";
+  } else {
+    btn.className = "btn btn-sell";
+    btn.style.marginTop = "0";
+    btn.style.width = "auto";
+    btn.textContent = "Enviar solicitud";
+  }
+}
+
+async function requestMoney() {
+  const amountInput = document.getElementById("depositAmountInput");
+  const noteInput = document.getElementById("depositNoteInput");
+  const amount = parseFloat(amountInput.value);
+
+  if (!amount || amount <= 0) {
+    showToast("Ingresa un monto válido para solicitar.", "error");
+    return;
+  }
+
+  const endpoint = moneyRequestMode === "deposit" ? "/api/money/deposit-request" : "/api/money/withdraw-request";
+  const btn = document.getElementById("requestDepositBtn");
+  btn.disabled = true;
+
+  const res = await apiFetch(endpoint, {
+    method: "POST",
+    body: { amount, note: noteInput.value.trim() },
+  });
+
+  btn.disabled = false;
+
+  if (!res.ok) {
+    showToast(res.error || "No se pudo enviar la solicitud.", "error");
+    return;
+  }
+
+  showToast(res.message, "success");
+  amountInput.value = "";
+  noteInput.value = "";
+  loadMoneyRequests();
+}
+
+async function loadMoneyRequests() {
+  const res = await apiFetch("/api/money/history");
+  if (!res.ok) return;
+  const wrap = document.getElementById("moneyRequestsWrap");
+
+  if (res.requests.length === 0) {
+    wrap.innerHTML = `<p class="text-dim" style="font-size:13px;">Aún no has hecho ninguna solicitud de dinero.</p>`;
+    return;
+  }
+
+  const statusLabel = { pending: "⏳ Pendiente", approved: "✅ Aprobado", rejected: "❌ Rechazado" };
+  const statusClass = { pending: "", approved: "badge-buy", rejected: "badge-sell" };
+  const typeLabel = { deposit: "Depósito", withdraw: "Retiro" };
+
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Fecha</th><th>Tipo</th><th>Monto</th><th>Motivo</th><th>Estado</th></tr></thead>
+      <tbody>
+        ${res.requests.map((r) => `
+          <tr>
+            <td>${r.requested_at}</td>
+            <td>${typeLabel[r.type] || r.type}</td>
+            <td>${formatMoney(r.amount)}</td>
+            <td>${r.note || "—"}</td>
+            <td>${statusClass[r.status] ? `<span class="${statusClass[r.status]}">${statusLabel[r.status]}</span>` : statusLabel[r.status]}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
 }
 
 async function loadUserStats() {

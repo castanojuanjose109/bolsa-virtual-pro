@@ -46,10 +46,10 @@
   <div class="admin-tabs">
     <button class="tab-btn active" data-view="adminOverviewView">Resumen</button>
     <button class="tab-btn" data-view="adminUsersView">Usuarios</button>
+    <button class="tab-btn" data-view="adminDepositsView">Solicitudes de dinero <span id="pendingDepositsBadge"></span></button>
     <button class="tab-btn" data-view="adminMarketView">Mercado</button>
     <button class="tab-btn" data-view="adminCdtView">CDT</button>
     <button class="tab-btn" data-view="adminMassPaymentView">Pagos masivos</button>
-    <button class="tab-btn" data-view="adminLedgerView">Historial de transacciones</button>
   </div>
 
   <div class="main-container">
@@ -84,13 +84,6 @@
           <input id="newUserName" class="input" placeholder="Nombre del usuario">
           <input id="newUserPassword" class="input" type="text" placeholder="Contraseña (opcional, se genera si se deja vacía)">
           <input id="newUserBalance" class="input" type="number" placeholder="Saldo inicial (opcional)">
-          <select id="newUserCourse" class="filter-select">
-            <option value="">Curso (opcional)</option>
-            <option value="8">Octavo (8)</option>
-            <option value="9">Noveno (9)</option>
-            <option value="10">Décimo (10)</option>
-            <option value="11">Once (11)</option>
-          </select>
           <button id="createUserBtn" class="btn btn-primary" style="margin-top:0;width:auto;">Crear cuenta</button>
         </div>
       </div>
@@ -101,16 +94,16 @@
       </div>
     </div>
 
-    <!-- ---------- HISTORIAL DE TRANSACCIONES (ADMIN) ---------- -->
-    <div id="adminLedgerView" class="view">
+    <!-- ---------- SOLICITUDES DE DINERO (ADMIN) ---------- -->
+    <div id="adminDepositsView" class="view">
       <div class="panel">
         <div class="panel-header">
-          <h3>Historial de transacciones — todo el dinero movido en la plataforma</h3>
+          <h3>Solicitudes de depósito y retiro</h3>
         </div>
         <p class="text-dim" style="margin-top:0;">
-          Compras, ventas, pagos de CDT, pagos masivos y ajustes manuales de saldo hechos desde el panel, los 500 más recientes primero.
+          Ni los depósitos ni los retiros que piden los usuarios cambian su saldo automáticamente: debes aprobarlos o rechazarlos aquí.
         </p>
-        <div id="adminLedgerTableWrap"></div>
+        <div id="adminDepositsTableWrap"></div>
       </div>
     </div>
 
@@ -119,8 +112,8 @@
       <div class="panel">
         <div class="panel-header"><h3>Horario programado del mercado automático</h3></div>
         <p class="text-dim" style="margin-top:0;">
-          Si lo activas, el mercado se enciende y apaga solo todos los días según la <b>hora de Colombia</b>
-          (hora actual: <b id="scheduleServerTime">—</b>). Mientras esté
+          Si lo activas, el mercado se enciende y apaga solo todos los días según la hora del
+          servidor (hora actual del servidor: <b id="scheduleServerTime">—</b>). Mientras esté
           activo, el botón manual de arriba puede ser sobrescrito por el horario en cada ciclo.
         </p>
         <div class="inline-form">
@@ -175,36 +168,22 @@
         </p>
         <div class="inline-form">
           <input id="massPaymentAmountNow" class="input" type="number" min="1" placeholder="Monto por usuario">
-          <select id="massPaymentTargetNow" class="filter-select">
-            <option value="">Todos los usuarios</option>
-            <option value="8">Solo curso 8</option>
-            <option value="9">Solo curso 9</option>
-            <option value="10">Solo curso 10</option>
-            <option value="11">Solo curso 11</option>
-          </select>
-          <button id="sendMassPaymentNowBtn" class="btn btn-primary" style="margin-top:0;width:auto;">💸 Enviar ahora</button>
+          <button id="sendMassPaymentNowBtn" class="btn btn-primary" style="margin-top:0;width:auto;">💸 Enviar a todos ahora</button>
         </div>
       </div>
 
       <div class="panel">
         <div class="panel-header"><h3>Pago automático recurrente</h3></div>
         <p class="text-dim" style="margin-top:0;">
-          Si lo activas, cada cierto número de días se le acredita
-          automáticamente el mismo monto al grupo elegido, sin que tengas
+          Si lo activas, cada cierto número de horas se le acredita
+          automáticamente el mismo monto a todos los usuarios, sin que tengas
           que hacer nada.
         </p>
         <div class="inline-form">
           <input id="massPaymentRecurringAmount" class="input" type="number" min="1" placeholder="Monto por usuario">
           <label class="field-label" style="margin:0;">Cada</label>
-          <input id="massPaymentIntervalDays" class="input" type="number" min="0.1" step="0.1" style="width:110px;" placeholder="Días">
-          <span>días</span>
-          <select id="massPaymentTargetRecurring" class="filter-select">
-            <option value="">Todos los usuarios</option>
-            <option value="8">Solo curso 8</option>
-            <option value="9">Solo curso 9</option>
-            <option value="10">Solo curso 10</option>
-            <option value="11">Solo curso 11</option>
-          </select>
+          <input id="massPaymentIntervalHours" class="input" type="number" min="0.1" step="0.1" style="width:110px;" placeholder="Horas">
+          <span>horas</span>
           <button id="saveMassPaymentScheduleBtn" class="btn btn-primary" style="margin-top:0;width:auto;">Guardar</button>
         </div>
         <div class="action-row mt-16">
@@ -233,15 +212,6 @@
 
     <label class="field-label">Nombre</label>
     <input id="editUserName" class="input">
-
-    <label class="field-label mt-16">Curso</label>
-    <select id="editUserCourse" class="input">
-      <option value="">Sin definir</option>
-      <option value="8">Octavo (8)</option>
-      <option value="9">Noveno (9)</option>
-      <option value="10">Décimo (10)</option>
-      <option value="11">Once (11)</option>
-    </select>
 
     <label class="field-label mt-16">Saldo</label>
     <input id="editUserBalance" class="input" type="number">

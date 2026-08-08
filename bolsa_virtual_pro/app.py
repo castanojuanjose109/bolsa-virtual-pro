@@ -173,7 +173,7 @@ def process_due_cdts():
     además del interés se devuelve el capital y el CDT queda 'completed'.
     """
     conn = db.get_connection()
-    now = db.now_dt()
+    now = datetime.datetime.now()
     now_str = db.now_iso()
 
     due = conn.execute(
@@ -215,7 +215,7 @@ def process_due_cdts():
 
 def process_market_schedule():
     """Si el horario programado está activo, enciende o apaga el mercado
-    automático según la hora actual (hora de Colombia)."""
+    automático según la hora actual del servidor."""
     if db.get_config("market_schedule_enabled", "0") != "1":
         return
     try:
@@ -224,7 +224,7 @@ def process_market_schedule():
     except ValueError:
         return
 
-    current_hour = db.now_dt().hour
+    current_hour = datetime.datetime.now().hour
     if start_hour <= end_hour:
         should_be_on = start_hour <= current_hour < end_hour
     else:
@@ -238,52 +238,45 @@ def process_market_schedule():
 
 
 def process_mass_payment_schedule():
-    """Si el pago masivo recurrente está activo y ya pasaron los días
-    configurados desde la última vez, acredita el monto a todos los
-    usuarios (o solo a los de un curso, si se configuró un grupo)."""
+    """Si el pago masivo recurrente está activo y ya pasó el intervalo
+    configurado desde la última vez, acredita el monto a todos los usuarios."""
     if db.get_config("mass_payment_enabled", "0") != "1":
         return
     try:
         amount = float(db.get_config("mass_payment_amount", "0"))
-        interval_days = float(db.get_config("mass_payment_interval_days", "1"))
+        interval_hours = float(db.get_config("mass_payment_interval_hours", "24"))
     except ValueError:
         return
-    if amount <= 0 or interval_days <= 0:
+    if amount <= 0 or interval_hours <= 0:
         return
 
-    target_course = db.get_config("mass_payment_target_course", "")
     last_run_str = db.get_config("mass_payment_last_run", "")
-    now = db.now_dt()
+    now = datetime.datetime.now()
     if last_run_str:
         try:
             last_run = datetime.datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
-            if (now - last_run).total_seconds() < interval_days * 86400:
+            if (now - last_run).total_seconds() < interval_hours * 3600:
                 return
         except ValueError:
             pass
 
-    send_money_to_all_users(amount, source="recurring", target_course=target_course)
+    send_money_to_all_users(amount, source="recurring")
     db.set_config("mass_payment_last_run", db.now_iso())
 
 
-def send_money_to_all_users(amount, source="manual", target_course=""):
-    """Acredita 'amount' de dinero ficticio al saldo de todos los usuarios,
-    o solo a los de un curso si se indica target_course ('8','9','10','11'),
-    y deja registro en mass_payments."""
+def send_money_to_all_users(amount, source="manual"):
+    """Acredita 'amount' de dinero ficticio al saldo de TODOS los usuarios
+    de una sola vez, y deja registro en mass_payments."""
     conn = db.get_connection()
-    user_ids = db.get_user_ids_by_course(target_course)
-    if not user_ids:
-        conn.close()
-        return 0
-    placeholders = ",".join("?" for _ in user_ids)
-    conn.execute(f"UPDATE users SET balance = balance + ? WHERE id IN ({placeholders})", (amount, *user_ids))
+    conn.execute("UPDATE users SET balance = balance + ?", (amount,))
+    users_count = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
     conn.execute(
-        "INSERT INTO mass_payments (amount, users_count, source, target_course, paid_at) VALUES (?, ?, ?, ?, ?)",
-        (amount, len(user_ids), source, target_course or "", db.now_iso()),
+        "INSERT INTO mass_payments (amount, users_count, source, paid_at) VALUES (?, ?, ?, ?)",
+        (amount, users_count, source, db.now_iso()),
     )
     conn.commit()
     conn.close()
-    return len(user_ids)
+    return users_count
 
 
 def scheduler_loop():
@@ -431,19 +424,17 @@ def compute_summary(conn, user):
 @app.route("/api/login", methods=["POST"])
 def api_login():
     """
-    Registro / inicio de sesión con usuario, contraseña y curso.
+    Registro / inicio de sesión con usuario y contraseña.
     - Si el nombre no existe: se crea la cuenta automáticamente con la
-      contraseña indicada, el curso elegido y el dinero ficticio inicial.
+      contraseña indicada y el dinero ficticio inicial.
     - Si el nombre ya existe: se valida la contraseña contra el hash
-      guardado en la base de datos, y se actualiza el curso guardado
-      por si el estudiante cambió de grado.
+      guardado en la base de datos.
     La contraseña nunca se guarda ni se envía en texto plano; se guarda
     únicamente su hash (werkzeug.security).
     """
     data = request.get_json(force=True, silent=True) or {}
     name = (data.get("name") or "").strip()
     password = data.get("password") or ""
-    course = (data.get("course") or "").strip()
 
     if not name:
         return jsonify({"ok": False, "error": "Escribe un nombre de usuario."}), 400
@@ -453,8 +444,6 @@ def api_login():
         return jsonify({"ok": False, "error": "Escribe una contraseña."}), 400
     if len(password) < 4:
         return jsonify({"ok": False, "error": "La contraseña debe tener al menos 4 caracteres."}), 400
-    if course not in db.CURSOS_DISPONIBLES:
-        return jsonify({"ok": False, "error": "Elige tu curso (8, 9, 10 u 11)."}), 400
 
     conn = db.get_connection()
     user = conn.execute("SELECT * FROM users WHERE name = ?", (name,)).fetchone()
@@ -464,9 +453,9 @@ def api_login():
         # y el dinero ficticio inicial definido por el administrador.
         initial = db.get_initial_balance()
         conn.execute(
-            "INSERT INTO users (name, password_hash, balance, is_blocked, course, created_at) "
-            "VALUES (?, ?, ?, 0, ?, ?)",
-            (name, generate_password_hash(password), initial, course, db.now_iso()),
+            "INSERT INTO users (name, password_hash, balance, is_blocked, created_at) "
+            "VALUES (?, ?, ?, 0, ?)",
+            (name, generate_password_hash(password), initial, db.now_iso()),
         )
         conn.commit()
         user = conn.execute("SELECT * FROM users WHERE name = ?", (name,)).fetchone()
@@ -474,10 +463,6 @@ def api_login():
         if not check_password_hash(user["password_hash"], password):
             conn.close()
             return jsonify({"ok": False, "error": "Contraseña incorrecta."}), 401
-        if user["course"] != course:
-            conn.execute("UPDATE users SET course = ? WHERE id = ?", (course, user["id"]))
-            conn.commit()
-            user = conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
 
     if user["is_blocked"]:
         conn.close()
@@ -487,7 +472,7 @@ def api_login():
     session["user_name"] = user["name"]
     conn.close()
 
-    return jsonify({"ok": True, "user": {"id": user["id"], "name": user["name"], "balance": user["balance"], "course": user["course"]}})
+    return jsonify({"ok": True, "user": {"id": user["id"], "name": user["name"], "balance": user["balance"]}})
 
 
 @app.route("/api/logout", methods=["POST"])
@@ -756,11 +741,92 @@ def api_stats():
 
 
 # --------------------------------------------------------------------------
-# La opción para que los usuarios "soliciten dinero" fue retirada: ahora
-# el administrador entrega dinero directamente (ficha de usuario, pagos
-# masivos manuales o recurrentes). El historial completo de todo el
-# dinero que se ha movido en la plataforma está en /admin/api/ledger.
+# API — Solicitudes de dinero ficticio: depósito y retiro (ambas requieren
+# aprobación del administrador; el saldo nunca cambia hasta que se resuelven).
 # --------------------------------------------------------------------------
+@app.route("/api/money/deposit-request", methods=["POST"])
+@login_required
+def api_request_deposit():
+    """
+    El usuario pide que se le agregue dinero ficticio a su cuenta.
+    La solicitud queda "pendiente" hasta que el administrador la apruebe
+    o la rechace desde el panel de administración; el saldo NO cambia aquí.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        amount = float(data.get("amount", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Monto inválido."}), 400
+
+    if amount <= 0:
+        return jsonify({"ok": False, "error": "El monto debe ser mayor que cero."}), 400
+    if amount > 10_000_000:
+        return jsonify({"ok": False, "error": "El monto solicitado es demasiado alto."}), 400
+
+    note = (data.get("note") or "").strip()[:200]
+
+    conn = db.get_connection()
+    conn.execute(
+        "INSERT INTO deposit_requests (user_id, type, amount, status, note, requested_at) "
+        "VALUES (?, 'deposit', ?, 'pending', ?, ?)",
+        (session["user_id"], amount, note, db.now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "message": "Tu solicitud de depósito fue enviada y está esperando aprobación del administrador."})
+
+
+@app.route("/api/money/withdraw-request", methods=["POST"])
+@login_required
+def api_request_withdraw():
+    """
+    El usuario pide retirar dinero ficticio de su cuenta.
+    Se valida que tenga saldo suficiente en el momento de pedirlo (aviso
+    temprano), pero la resta real del saldo solo ocurre si el administrador
+    aprueba la solicitud, y se vuelve a validar en ese momento por si el
+    saldo cambió mientras tanto (por ejemplo, por una compra).
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        amount = float(data.get("amount", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Monto inválido."}), 400
+
+    if amount <= 0:
+        return jsonify({"ok": False, "error": "El monto debe ser mayor que cero."}), 400
+
+    conn = db.get_connection()
+    user = conn.execute("SELECT balance FROM users WHERE id = ?", (session["user_id"],)).fetchone()
+    if user is None:
+        conn.close()
+        return jsonify({"ok": False, "error": "Usuario no encontrado."}), 404
+    if amount > user["balance"] + 1e-9:
+        conn.close()
+        return jsonify({"ok": False, "error": "No puedes solicitar más dinero del que tienes disponible."}), 400
+
+    note = (data.get("note") or "").strip()[:200]
+
+    conn.execute(
+        "INSERT INTO deposit_requests (user_id, type, amount, status, note, requested_at) "
+        "VALUES (?, 'withdraw', ?, 'pending', ?, ?)",
+        (session["user_id"], amount, note, db.now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "message": "Tu solicitud de retiro fue enviada y está esperando aprobación del administrador."})
+
+
+@app.route("/api/money/history")
+@login_required
+def api_money_history():
+    """Historial de solicitudes de depósito y retiro del usuario actual, con su estado."""
+    conn = db.get_connection()
+    rows = conn.execute(
+        "SELECT id, type, amount, status, note, requested_at, resolved_at FROM deposit_requests "
+        "WHERE user_id = ? ORDER BY id DESC", (session["user_id"],)
+    ).fetchall()
+    conn.close()
+    return jsonify({"ok": True, "requests": [dict(r) for r in rows]})
 
 
 # --------------------------------------------------------------------------
@@ -800,7 +866,7 @@ def api_cdt_create():
         return jsonify({"ok": False, "error": "Saldo insuficiente para abrir este CDT."}), 400
 
     rate = float(db.get_config("cdt_rate_percent", "2.0"))
-    now = db.now_dt()
+    now = datetime.datetime.now()
     next_payment = now + datetime.timedelta(days=CDT_PERIOD_DAYS)
 
     new_balance = round(user["balance"] - amount, 2)
@@ -971,7 +1037,6 @@ def admin_users():
         result.append({
             "id": u["id"], "name": u["name"], "balance": round(u["balance"], 2),
             "is_blocked": bool(u["is_blocked"]),
-            "course": u["course"] or "",
             "invested": round(invested, 2),
             "equity": round(u["balance"] + current_value, 2),
             "created_at": u["created_at"],
@@ -990,12 +1055,9 @@ def admin_create_user():
     name = (data.get("name") or "").strip()
     balance = data.get("balance", db.get_initial_balance())
     password = (data.get("password") or "").strip()
-    course = (data.get("course") or "").strip()
 
     if not name:
         return jsonify({"ok": False, "error": "El nombre es obligatorio."}), 400
-    if course and course not in db.CURSOS_DISPONIBLES:
-        return jsonify({"ok": False, "error": "Curso inválido."}), 400
     try:
         balance = max(0.0, float(balance))
     except (TypeError, ValueError):
@@ -1017,8 +1079,8 @@ def admin_create_user():
         conn.close()
         return jsonify({"ok": False, "error": "Ya existe un usuario con ese nombre."}), 400
     conn.execute(
-        "INSERT INTO users (name, password_hash, balance, is_blocked, course, created_at) VALUES (?, ?, ?, 0, ?, ?)",
-        (name, generate_password_hash(password), balance, course, db.now_iso()),
+        "INSERT INTO users (name, password_hash, balance, is_blocked, created_at) VALUES (?, ?, ?, 0, ?)",
+        (name, generate_password_hash(password), balance, db.now_iso()),
     )
     conn.commit()
     conn.close()
@@ -1038,7 +1100,6 @@ def admin_update_user(user_id):
     name = data.get("name")
     balance = data.get("balance")
     new_password = (data.get("new_password") or "").strip()
-    course = data.get("course")
 
     if name:
         name = name.strip()
@@ -1054,12 +1115,6 @@ def admin_update_user(user_id):
             conn.execute("UPDATE users SET balance = ? WHERE id = ?", (balance, user_id))
         except (TypeError, ValueError):
             pass
-
-    if course is not None and course != "":
-        if course not in db.CURSOS_DISPONIBLES:
-            conn.close()
-            return jsonify({"ok": False, "error": "Curso inválido."}), 400
-        conn.execute("UPDATE users SET course = ? WHERE id = ?", (course, user_id))
 
     if new_password:
         if len(new_password) < 4:
@@ -1078,19 +1133,13 @@ def admin_update_user(user_id):
 @app.route("/admin/api/users/<int:user_id>/delete", methods=["POST"])
 @admin_required
 def admin_delete_user(user_id):
-    """Elimina una cuenta de forma permanente, junto con todo su historial
-    (portafolio, transacciones, CDTs y ajustes de saldo), gracias a que las
-    tablas relacionadas tienen ON DELETE CASCADE hacia users."""
     conn = db.get_connection()
-    user = conn.execute("SELECT id, name FROM users WHERE id = ?", (user_id,)).fetchone()
-    if user is None:
-        conn.close()
-        return jsonify({"ok": False, "error": "Usuario no encontrado."}), 404
-
+    conn.execute("DELETE FROM portfolios WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM transactions WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
     conn.close()
-    return jsonify({"ok": True, "deleted_name": user["name"]})
+    return jsonify({"ok": True})
 
 
 @app.route("/admin/api/users/<int:user_id>/reset", methods=["POST"])
@@ -1142,10 +1191,6 @@ def admin_add_money(user_id):
 
     conn = db.get_connection()
     conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (amount, user_id))
-    conn.execute(
-        "INSERT INTO admin_adjustments (user_id, amount, reason, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, amount, "Añadido desde el panel admin", db.now_iso()),
-    )
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -1168,12 +1213,7 @@ def admin_remove_money(user_id):
         conn.close()
         return jsonify({"ok": False, "error": "Usuario no encontrado."}), 404
     new_balance = max(0.0, user["balance"] - amount)  # nunca negativo
-    actually_removed = user["balance"] - new_balance
     conn.execute("UPDATE users SET balance = ? WHERE id = ?", (new_balance, user_id))
-    conn.execute(
-        "INSERT INTO admin_adjustments (user_id, amount, reason, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, -actually_removed, "Quitado desde el panel admin", db.now_iso()),
-    )
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -1430,7 +1470,7 @@ def admin_market_status():
 @admin_required
 def admin_market_schedule():
     """Configura el horario en que el mercado automático debe encenderse
-    y apagarse solo (por ejemplo, de 9 a.m. a 6 p.m., hora de Colombia)."""
+    y apagarse solo (por ejemplo, de 9 a.m. a 6 p.m., hora del servidor)."""
     if request.method == "POST":
         data = request.get_json(force=True, silent=True) or {}
         enabled = bool(data.get("enabled"))
@@ -1453,7 +1493,7 @@ def admin_market_schedule():
         "enabled": db.get_config("market_schedule_enabled", "0") == "1",
         "start_hour": int(db.get_config("market_schedule_start_hour", "9")),
         "end_hour": int(db.get_config("market_schedule_end_hour", "18")),
-        "server_time": db.now_iso(),  # hora de Colombia (America/Bogota)
+        "server_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
 
 
@@ -1496,8 +1536,8 @@ def admin_cdt_list():
 @app.route("/admin/api/mass-payment/send-now", methods=["POST"])
 @admin_required
 def admin_mass_payment_send_now():
-    """Le envía dinero ficticio a todos los usuarios (o a un curso
-    específico) de una sola vez, con un solo comando/botón."""
+    """Le envía dinero ficticio a TODOS los usuarios de una sola vez,
+    con un solo comando/botón."""
     data = request.get_json(force=True, silent=True) or {}
     try:
         amount = float(data.get("amount", 0))
@@ -1506,42 +1546,31 @@ def admin_mass_payment_send_now():
     if amount <= 0:
         return jsonify({"ok": False, "error": "El monto debe ser mayor que cero."}), 400
 
-    target_course = (data.get("target_course") or "").strip()
-    if target_course and target_course not in db.CURSOS_DISPONIBLES:
-        return jsonify({"ok": False, "error": "Curso inválido."}), 400
-
-    users_count = send_money_to_all_users(amount, source="manual", target_course=target_course)
-    if users_count == 0:
-        return jsonify({"ok": False, "error": "No hay usuarios en ese grupo todavía."}), 400
+    users_count = send_money_to_all_users(amount, source="manual")
     return jsonify({"ok": True, "users_count": users_count})
 
 
 @app.route("/admin/api/mass-payment/schedule", methods=["GET", "POST"])
 @admin_required
 def admin_mass_payment_schedule():
-    """Configura un pago automático recurrente: cada X días, se le
-    acredita un monto fijo a todos los usuarios (o a un curso específico),
-    sin intervención manual."""
+    """Configura un pago automático recurrente: cada X horas, se le
+    acredita un monto fijo a TODOS los usuarios, sin intervención manual."""
     if request.method == "POST":
         data = request.get_json(force=True, silent=True) or {}
         enabled = bool(data.get("enabled"))
-        target_course = (data.get("target_course") or "").strip()
         try:
             amount = float(data.get("amount", 0))
-            interval_days = float(data.get("interval_days", 1))
+            interval_hours = float(data.get("interval_hours", 24))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "Datos inválidos."}), 400
         if enabled and amount <= 0:
             return jsonify({"ok": False, "error": "El monto debe ser mayor que cero."}), 400
-        if interval_days <= 0:
+        if interval_hours <= 0:
             return jsonify({"ok": False, "error": "El intervalo debe ser mayor que cero."}), 400
-        if target_course and target_course not in db.CURSOS_DISPONIBLES:
-            return jsonify({"ok": False, "error": "Curso inválido."}), 400
 
         db.set_config("mass_payment_enabled", "1" if enabled else "0")
         db.set_config("mass_payment_amount", amount)
-        db.set_config("mass_payment_interval_days", interval_days)
-        db.set_config("mass_payment_target_course", target_course)
+        db.set_config("mass_payment_interval_hours", interval_hours)
         return jsonify({"ok": True})
 
     last_run = db.get_config("mass_payment_last_run", "")
@@ -1549,8 +1578,7 @@ def admin_mass_payment_schedule():
         "ok": True,
         "enabled": db.get_config("mass_payment_enabled", "0") == "1",
         "amount": float(db.get_config("mass_payment_amount", "0")),
-        "interval_days": float(db.get_config("mass_payment_interval_days", "1")),
-        "target_course": db.get_config("mass_payment_target_course", ""),
+        "interval_hours": float(db.get_config("mass_payment_interval_hours", "24")),
         "last_run": last_run or None,
     })
 
@@ -1562,18 +1590,6 @@ def admin_mass_payment_history():
     rows = conn.execute("SELECT * FROM mass_payments ORDER BY id DESC LIMIT 50").fetchall()
     conn.close()
     return jsonify({"ok": True, "payments": [dict(r) for r in rows]})
-
-
-# --------------------------------------------------------------------------
-# Historial de transacciones TOTAL (todo el dinero que se ha movido en la
-# plataforma: compras, ventas, pagos de CDT, pagos masivos, ajustes del
-# admin y depósitos/retiros aprobados en el pasado).
-# --------------------------------------------------------------------------
-@app.route("/admin/api/ledger")
-@admin_required
-def admin_ledger():
-    rows = db.get_ledger(limit=500)
-    return jsonify({"ok": True, "movements": rows})
 
 
 # --------------------------------------------------------------------------

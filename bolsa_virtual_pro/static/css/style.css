@@ -386,8 +386,6 @@ button {
 }
 .stat-card .value.positive { color: var(--green); }
 .stat-card .value.negative { color: var(--red); }
-td.positive { color: var(--green); font-weight: 600; }
-td.negative { color: var(--red); font-weight: 600; }
 .stat-card .sub { font-size: 12px; color: var(--text-faint); margin-top: 6px; }
 
 /* ==========================================================================
