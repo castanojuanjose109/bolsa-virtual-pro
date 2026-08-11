@@ -144,7 +144,7 @@ function switchView(viewId, btnEl) {
 
   if (viewId === "portfolioView") loadPortfolio();
   if (viewId === "cdtView") loadCdtView();
-  if (viewId === "historyView") loadHistory();
+  if (viewId === "historyView") { loadHistory(); loadMoneyHistory(); }
   if (viewId === "rankingView") loadRanking();
 }
 
@@ -226,7 +226,7 @@ function renderDashboardStats(summary) {
 
   grid.innerHTML = `
     <div class="stat-card">
-      <div class="label">Dinero disponible</div>
+      <div class="label">Activos (dinero disponible)</div>
       <div class="value">${formatMoney(summary.available_cash)}</div>
     </div>
     <div class="stat-card">
@@ -246,7 +246,7 @@ function renderDashboardStats(summary) {
       <div class="value">${formatMoney(summary.equity)}</div>
     </div>
     <div class="stat-card">
-      <div class="label">Bloqueado en CDT</div>
+      <div class="label">Pasivos (bloqueado en CDT)</div>
       <div class="value">${formatMoney(summary.cdt_locked)}</div>
     </div>
     <div class="stat-card">
@@ -504,7 +504,7 @@ async function loadPortfolio() {
   const s = res.summary;
 
   document.getElementById("portfolioStats").innerHTML = `
-    <div class="stat-card"><div class="label">Dinero disponible</div><div class="value">${formatMoney(s.available_cash)}</div></div>
+    <div class="stat-card"><div class="label">Activos (dinero disponible)</div><div class="value">${formatMoney(s.available_cash)}</div></div>
     <div class="stat-card"><div class="label">Dinero invertido</div><div class="value">${formatMoney(s.invested)}</div></div>
     <div class="stat-card"><div class="label">Valor actual de posiciones</div><div class="value">${formatMoney(s.current_value)}</div></div>
     <div class="stat-card"><div class="label">Patrimonio total</div><div class="value">${formatMoney(s.equity)}</div></div>
@@ -570,6 +570,33 @@ async function loadHistory() {
             <td>${formatQty(h.quantity)}</td>
             <td>${formatMoney(h.price)}</td>
             <td class="${(h.profit_loss ?? 0) >= 0 ? 'text-green' : 'text-red'}">${h.profit_loss !== null ? formatMoney(h.profit_loss) : '—'}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+async function loadMoneyHistory() {
+  const res = await apiFetch("/api/money-history");
+  if (!res.ok) return;
+  const wrap = document.getElementById("moneyHistoryTableWrap");
+
+  if (res.movements.length === 0) {
+    wrap.innerHTML = `<div class="empty-state"><div class="big-icon">💵</div>Todavía no se ha movido dinero en tu cuenta.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Monto</th></tr></thead>
+      <tbody>
+        ${res.movements.map((m) => `
+          <tr>
+            <td>${m.ts || "—"}</td>
+            <td>${m.kind}</td>
+            <td>${m.detail || "—"}</td>
+            <td class="${m.amount >= 0 ? 'text-green' : 'text-red'}">${m.amount >= 0 ? "+" : ""}${formatMoney(m.amount)}</td>
           </tr>
         `).join("")}
       </tbody>

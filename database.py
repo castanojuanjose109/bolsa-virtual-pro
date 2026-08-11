@@ -213,6 +213,20 @@ def init_db():
         )
     """)
 
+    # --- Quién recibió exactamente cada pago masivo (para el historial
+    # personal de cada cuenta, sin importar si luego cambia de curso). ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS mass_payment_recipients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mass_payment_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            paid_at TEXT NOT NULL,
+            FOREIGN KEY (mass_payment_id) REFERENCES mass_payments (id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        )
+    """)
+
     # --- Ajustes manuales de saldo hechos por el admin (+/-) desde la
     # ficha de un usuario; quedan registrados para el historial total. ---
     cur.execute("""
@@ -327,6 +341,78 @@ def get_user_ids_by_course(course):
         rows = conn.execute("SELECT id FROM users").fetchall()
     conn.close()
     return [r["id"] for r in rows]
+
+
+def get_user_ledger(user_id, limit=300):
+    """Historial de transacciones de dinero de UNA cuenta: compras, ventas,
+    apertura y pagos de CDT, ajustes del admin, pagos masivos recibidos y
+    depósitos/retiros aprobados en el pasado. Todo en un solo listado
+    ordenado del más reciente al más antiguo."""
+    conn = get_connection()
+
+    rows = conn.execute("""
+        SELECT 'Compra' as kind, -t.total as amount,
+               (printf('%.4f', t.quantity) || ' ' || s.symbol || ' @ ' || printf('%.2f', t.price)) as detail,
+               t.timestamp as ts
+        FROM transactions t
+        JOIN stocks s ON s.id = t.stock_id
+        WHERE t.user_id = ? AND t.type = 'buy'
+
+        UNION ALL
+
+        SELECT 'Venta', t.total,
+               (printf('%.4f', t.quantity) || ' ' || s.symbol || ' @ ' || printf('%.2f', t.price)),
+               t.timestamp
+        FROM transactions t
+        JOIN stocks s ON s.id = t.stock_id
+        WHERE t.user_id = ? AND t.type = 'sell'
+
+        UNION ALL
+
+        SELECT 'CDT — apertura (pasa a pasivos)', -c.amount,
+               ('A ' || c.quincenas_total || ' quincenas · ' || c.rate_percent || '% quincenal'),
+               c.created_at
+        FROM cdts c
+        WHERE c.user_id = ?
+
+        UNION ALL
+
+        SELECT 'CDT — pago de quincena', (p.interest_amount + p.principal_returned),
+               ('Quincena ' || p.quincena_numero || CASE WHEN p.principal_returned > 0 THEN ' (incluye capital, vuelve a activos)' ELSE '' END),
+               p.paid_at
+        FROM cdt_payments p
+        WHERE p.user_id = ?
+
+        UNION ALL
+
+        SELECT CASE WHEN a.amount >= 0 THEN 'Ajuste del admin (+)' ELSE 'Ajuste del admin (-)' END,
+               a.amount, COALESCE(NULLIF(a.reason, ''), 'Sin motivo'), a.created_at
+        FROM admin_adjustments a
+        WHERE a.user_id = ?
+
+        UNION ALL
+
+        SELECT CASE WHEN mp.source = 'manual' THEN 'Pago masivo' ELSE 'Pago masivo recurrente' END,
+               r.amount,
+               ('Grupo: ' || CASE WHEN mp.target_course = '' THEN 'todos' ELSE ('curso ' || mp.target_course) END),
+               r.paid_at
+        FROM mass_payment_recipients r
+        JOIN mass_payments mp ON mp.id = r.mass_payment_id
+        WHERE r.user_id = ?
+
+        UNION ALL
+
+        SELECT CASE WHEN d.type = 'deposit' THEN 'Depósito aprobado' ELSE 'Retiro aprobado' END,
+               CASE WHEN d.type = 'deposit' THEN d.amount ELSE -d.amount END,
+               COALESCE(NULLIF(d.note, ''), '—'), d.resolved_at
+        FROM deposit_requests d
+        WHERE d.user_id = ? AND d.status = 'approved'
+
+        ORDER BY ts DESC
+        LIMIT ?
+    """, (user_id, user_id, user_id, user_id, user_id, user_id, user_id, limit)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_ledger(limit=500):

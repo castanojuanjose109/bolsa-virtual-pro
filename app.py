@@ -269,17 +269,24 @@ def process_mass_payment_schedule():
 def send_money_to_all_users(amount, source="manual", target_course=""):
     """Acredita 'amount' de dinero ficticio al saldo de todos los usuarios,
     o solo a los de un curso si se indica target_course ('8','9','10','11'),
-    y deja registro en mass_payments."""
+    deja registro en mass_payments y guarda exactamente quién lo recibió
+    (para que cada cuenta lo vea en su propio historial)."""
     conn = db.get_connection()
     user_ids = db.get_user_ids_by_course(target_course)
     if not user_ids:
         conn.close()
         return 0
+    now = db.now_iso()
     placeholders = ",".join("?" for _ in user_ids)
     conn.execute(f"UPDATE users SET balance = balance + ? WHERE id IN ({placeholders})", (amount, *user_ids))
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO mass_payments (amount, users_count, source, target_course, paid_at) VALUES (?, ?, ?, ?, ?)",
-        (amount, len(user_ids), source, target_course or "", db.now_iso()),
+        (amount, len(user_ids), source, target_course or "", now),
+    )
+    mass_payment_id = cur.lastrowid
+    conn.executemany(
+        "INSERT INTO mass_payment_recipients (mass_payment_id, user_id, amount, paid_at) VALUES (?, ?, ?, ?)",
+        [(mass_payment_id, uid, amount, now) for uid in user_ids],
     )
     conn.commit()
     conn.close()
@@ -695,6 +702,16 @@ def api_history():
     """, (session["user_id"],)).fetchall()
     conn.close()
     return jsonify({"ok": True, "history": [dict(r) for r in rows]})
+
+
+@app.route("/api/money-history")
+@login_required
+def api_money_history_full():
+    """Historial TOTAL de dinero de la cuenta actual: compras, ventas,
+    aperturas y pagos de CDT, ajustes del admin, pagos masivos recibidos y
+    depósitos/retiros aprobados en el pasado."""
+    rows = db.get_user_ledger(session["user_id"], limit=300)
+    return jsonify({"ok": True, "movements": rows})
 
 
 @app.route("/api/ranking")
